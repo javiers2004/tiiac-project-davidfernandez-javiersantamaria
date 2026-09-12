@@ -1,0 +1,28 @@
+# Configuracion del smoke test: el pipeline ENTERO, en miniatura.
+# Tiene que terminar en menos de 5 minutos en CPU (regla 5/20).
+# No se trata de entrenar bien: se trata de demostrar que todas las piezas
+# encajan y que hay una metrica al final.
+
+experimento:
+  nombre: smoke
+  seed: 42
+
+datos:
+  raiz: data/
+  subset: 64
+  batch_size: 8
+  num_workers: 0
+
+modelo:
+  nombre: mi_modelo
+
+entrenamiento:
+  learning_rate: 0.001
+  epochs: 1
+  max_steps: 10
+  optimizador: adam
+
+wandb:
+  proyecto: tiiac-2026
+  entidad: null
+  modo: disabled

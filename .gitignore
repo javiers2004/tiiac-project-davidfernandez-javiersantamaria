@@ -1,0 +1,38 @@
+# ---- datos y pesos: NUNCA al repositorio ----
+data/*
+!data/.gitkeep
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.onnx
+*.npz
+
+# ---- caches ----
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ipynb_checkpoints/
+.ruff_cache/
+
+# ---- entornos ----
+venv/
+.venv/
+env/
+.conda/
+
+# ---- seguimiento de experimentos (el historial real vive en el servidor) ----
+wandb/
+mlruns/
+runs/
+
+# ---- secretos: si subes uno, hay que ROTARLO, no basta con borrarlo ----
+.env
+*.key
+secrets.*
+
+# ---- sistema ----
+.DS_Store
+Thumbs.db

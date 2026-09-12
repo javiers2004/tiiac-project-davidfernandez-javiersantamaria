@@ -1,0 +1,26 @@
+# Todos los hiperparametros viven aqui. Ninguno escrito a fuego en el codigo:
+# es lo que permite reproducir un experimento sabiendo solo que config se uso.
+
+experimento:
+  nombre: baseline
+  seed: 42
+
+datos:
+  raiz: data/
+  subset: null          # null = dataset completo; un entero = N muestras (regla 5/20)
+  batch_size: 64
+  num_workers: 2
+
+modelo:
+  nombre: mi_modelo
+  # ... los del paper. Cada valor deberia poder senyalarse en la ficha de replicacion.
+
+entrenamiento:
+  learning_rate: 0.001
+  epochs: 20
+  optimizador: adam
+
+wandb:
+  proyecto: tiiac-2026
+  entidad: null         # tu usuario o equipo de W&B
+  modo: online          # 'disabled' en los tests
