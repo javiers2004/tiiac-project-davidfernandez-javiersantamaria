@@ -7,13 +7,6 @@ Hasta **tres propuestas, en orden de preferencia**. La primera tiene que estar c
 la tercera son vuestras alternativas si la primera no pasa la puerta. Las tres tienen las mismas cuatro
 comprobaciones.
 
-> **Nota:** la plantilla original admite un máximo de 3 propuestas, pero se ha pedido rellenar 4 papers
-> (Growing NCA, DeepSwarm, Feature Visualization y Zebrafish). Se han mantenido como Propuesta 1, 2 y 3
-> en el orden pedido, y se ha añadido una **Propuesta 4 (extra)** al final con el paper de zebrafish.
-> Recordad que tendréis que elegir cuál de las cuatro dejáis fuera (o reordenar) antes de entregar,
-> dado que la ficha oficial solo permite tres. Basándonos en el análisis de las cuatro comprobaciones,
-> el paper del zebrafish es el que las pasa con más margen, así que valorad subirlo de posición.
-
 ---
 
 ## Cómo se entrega
