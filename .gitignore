@@ -36,3 +36,6 @@ secrets.*
 # ---- sistema ----
 .DS_Store
 Thumbs.db
+
+# ---- modelos .tar ----
+*.tar
