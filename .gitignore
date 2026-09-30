@@ -39,3 +39,6 @@ Thumbs.db
 
 # ---- modelos .tar ----
 *.tar
+
+# ---- salidas de interpretabilidad ----
+outputs/

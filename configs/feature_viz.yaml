@@ -1,0 +1,62 @@
+# Visualizacion de caracteristicas por maximizacion de activacion.
+#   python -m src.interpretability.feature_viz --neurona 0
+#
+# Nada de esto va escrito a fuego en el codigo: cambiar el experimento es
+# cambiar este fichero.
+
+experimento:
+  nombre: feature-viz
+  seed: 42
+
+modelo:
+  arquitectura: resnet18
+  checkpoint: models/resnet18_weights_best_acc.tar
+  n_clases: 1081          # Pl@ntNet-300K
+
+objetivo:
+  capa: fc                # 'fc' = capa de salida. Tambien vale 'layer3.1.conv2'.
+  neurona: 0              # indice de la clase (0..1080) o del canal
+
+imagen:
+  tamano: 224
+  # Atenuacion de las altas frecuencias. Subirlo da imagenes mas suaves y
+  # bajarlo, mas detalle y mas ruido. 1.0 es el valor de Olah et al.
+  decay_power: 1.0
+  sd_inicial: 0.01        # amplitud del espectro inicial (el "ruido" de partida)
+
+optimizacion:
+  learning_rate: 0.05     # Adam sobre el espectro, no sobre los pixeles
+  pasos: 256
+
+regularizacion:
+  # Con parametrizacion FFT + robustez casi nunca hacen falta. Se dejan a 0
+  # y se suben solo si la imagen sale con ruido residual.
+  tv: 0.0
+  l2: 0.0
+
+robustez:
+  # Sin esto la optimizacion produce ruido adversarial en vez de patrones.
+  pad: 12
+  jitter: 8
+  jitter_final: 4
+  escalas: [0.95, 0.975, 1.0, 1.025, 1.05]
+  rotaciones: [-5, -2, 0, 2, 5]
+
+normalizacion:
+  # OJO: tienen que ser las MISMAS estadisticas con las que se entreno el
+  # checkpoint, o el patron que salga no sera el que la neurona ve de verdad.
+  # Estas son las de ImageNet, que es lo que usa utils.get_data cuando
+  # pretrained=True. Si el checkpoint se entreno desde cero, las de
+  # Pl@ntNet-300K son:
+  #   media:       [0.4425, 0.4695, 0.3266]
+  #   desviacion:  [0.2353, 0.2219, 0.2325]
+  media: [0.485, 0.456, 0.406]
+  desviacion: [0.229, 0.224, 0.225]
+
+salida:
+  directorio: outputs/feature_viz
+
+wandb:
+  proyecto: tiiac-2026
+  entidad: null
+  modo: disabled          # 'online' para registrar el barrido de neuronas
