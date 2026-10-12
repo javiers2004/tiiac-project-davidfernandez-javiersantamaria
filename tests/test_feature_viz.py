@@ -17,17 +17,20 @@ from torchvision.models import resnet18
 
 from src.interpretability.feature_viz import (
     ImagenFourier,
+    UnidadMuerta,
     aplicar_robustez,
     maximizar_activacion,
-    resolver_modulo,
+    nombre_salida,
 )
+from src.interpretability.objetivos import resolver_modulo
+from src.utils.seed import fijar_seed
 
 N_CLASES = 10
 TAM = 64
 
 CFG = {
     "experimento": {"nombre": "test", "seed": 0},
-    "objetivo": {"capa": "fc", "neurona": 3},
+    "objetivo": {"tipo": "canal", "capa": "fc", "canal": 3},
     "imagen": {"tamano": TAM, "decay_power": 1.0, "sd_inicial": 0.01},
     "optimizacion": {"learning_rate": 0.05, "pasos": 4},
     "regularizacion": {"tv": 0.0, "l2": 0.0},
@@ -39,6 +42,13 @@ CFG = {
 
 
 def _modelo_congelado():
+    """Un resnet18 sin entrenar, pero SIEMPRE el mismo.
+
+    Sin fijar la seed, torch siembra su generador global con entropia del
+    sistema al arrancar el proceso, asi que cada ejecucion de pytest probaria
+    un modelo distinto y los tests serian flaky sin motivo aparente.
+    """
+    fijar_seed(0)
     modelo = resnet18(num_classes=N_CLASES)
     modelo.eval()
     modelo.requires_grad_(False)
@@ -90,19 +100,58 @@ def test_los_pesos_no_se_mueven():
 
 
 def test_la_activacion_sube():
-    """Si la activacion no sube, el gradiente no esta llegando a la imagen."""
-    _, historial = maximizar_activacion(CFG, modelo=_modelo_congelado())
-    assert len(historial) == CFG["optimizacion"]["pasos"]
-    assert historial[-1] > historial[0]
+    """Si la activacion no sube, el gradiente no esta llegando a la imagen.
+
+    Se comparan medias y no los extremos: cada paso mide la activacion bajo
+    una transformacion aleatoria distinta, asi que un paso suelto puede bajar
+    sin que la optimizacion vaya mal. Comparar historial[-1] con historial[0]
+    hace el test flaky.
+    """
+    cfg = copy.deepcopy(CFG)
+    cfg["optimizacion"]["pasos"] = 12
+    _, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+    assert len(historial) == 12
+    primeros = sum(historial[:4]) / 4
+    ultimos = sum(historial[-4:]) / 4
+    assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
 
 
-def test_una_neurona_inexistente_falla_pronto():
+def test_un_canal_inexistente_falla_pronto():
     """Sin la comprobacion, un indice fuera de rango revienta con un error de
     indexado de torch mucho mas abajo y cuesta de leer."""
     cfg = copy.deepcopy(CFG)
-    cfg["objetivo"]["neurona"] = N_CLASES + 5
+    cfg["objetivo"]["canal"] = N_CLASES + 5
     with pytest.raises(IndexError, match="no existe"):
         maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+
+def test_una_unidad_muerta_se_detecta_en_el_primer_paso():
+    """Una unidad que un ReLU deja en cero no propaga gradiente: el bucle
+    devolveria el ruido inicial sin quejarse. Mas de la mitad de las
+    posiciones centrales de layer4 estan asi al arrancar, asi que esto no es
+    un caso raro."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "neurona", "capa": "layer4", "canal": 0}
+
+    modelo = _modelo_congelado()
+    # s * 0, no zeros_like: una unidad muerta de verdad SIGUE en el grafo, lo
+    # que pasa es que su gradiente es cero. Con zeros_like el tensor queda
+    # desconectado y backward falla por otro motivo, que no es el que se
+    # quiere probar.
+    modelo.layer4.register_forward_hook(lambda _m, _e, s: s * 0)
+
+    with pytest.raises(UnidadMuerta, match="no propaga gradiente"):
+        maximizar_activacion(cfg, modelo=modelo)
+
+
+def test_el_nombre_del_fichero_distingue_los_dos_objetivos():
+    """Channel y Neuron sobre la misma capa y canal no pueden acabar en el
+    mismo PNG, o uno pisa al otro sin avisar."""
+    base = {"capa": "layer2", "canal": 42}
+    canal = nombre_salida({**base, "tipo": "canal"})
+    neurona = nombre_salida({**base, "tipo": "neurona", "x": None, "y": None})
+    assert canal != neurona
 
 
 def test_la_misma_seed_da_la_misma_imagen():

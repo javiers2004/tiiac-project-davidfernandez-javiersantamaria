@@ -45,6 +45,11 @@ from torchvision.utils import save_image
 RAIZ = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ))
 
+from src.interpretability.objetivos import (        # noqa: E402
+    construir_objetivo,
+    inspeccionar_capa,
+    resolver_modulo,
+)
 from src.utils.seed import fijar_seed               # noqa: E402
 from src.utils.tracking import abrir_run, registrar  # noqa: E402
 from src.utils.utils import load_model              # noqa: E402
@@ -153,14 +158,6 @@ def _desplazar(x: torch.Tensor, maximo: int, generador: torch.Generator) -> torc
     return torch.roll(x, shifts=(dy, dx), dims=(2, 3))
 
 
-def resolver_modulo(modelo: nn.Module, ruta: str) -> nn.Module:
-    """Devuelve el submodulo indicado por una ruta con puntos ('layer3.1.conv2')."""
-    modulo: nn.Module = modelo
-    for parte in ruta.split("."):
-        modulo = modulo[int(parte)] if parte.isdigit() else getattr(modulo, parte)
-    return modulo
-
-
 def construir_modelo_congelado(mcfg: dict) -> nn.Module:
     """Carga el checkpoint y deja el modelo en eval con los pesos congelados."""
     arquitectura = mcfg["arquitectura"]
@@ -202,7 +199,8 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     modelo = modelo.to(dispositivo)
 
     ocfg, icfg, pcfg = cfg["objetivo"], cfg["imagen"], cfg["optimizacion"]
-    capa, neurona = str(ocfg["capa"]), int(ocfg["neurona"])
+    capa = str(ocfg["capa"])
+    objetivo = construir_objetivo(ocfg)
 
     # Un generador propio: las semillas globales las fija src/utils/seed.py y
     # no se tocan desde aqui.
@@ -239,12 +237,9 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             entrada = aplicar_robustez(imagen, rcfg, generador)
             modelo((entrada - media) / desv)
 
-            act = capturado["act"]
-            if neurona >= act.shape[1]:
-                raise IndexError(f"la capa '{capa}' tiene {act.shape[1]} unidades; "
-                                 f"la neurona {neurona} no existe")
-            # Para una conv, la media espacial del canal. Para fc, el logit.
-            activacion = act[:, neurona].mean()
+            # El objetivo decide la reduccion: Channel promedia el canal
+            # entero, Neuron toma una sola posicion. Ver objetivos.py.
+            activacion = objetivo(capturado["act"])
 
             perdida = -activacion
             if peso_tv:
@@ -253,6 +248,14 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
                 perdida = perdida + peso_l2 * imagen.pow(2).mean()
 
             perdida.backward()
+
+            # Una unidad muerta (post-ReLU en cero) no da gradiente, y el
+            # bucle devolveria el ruido inicial sin una sola queja. Mas de la
+            # mitad de las posiciones centrales de layer4 estan asi al
+            # arrancar, asi que conviene detectarlo en el primer paso.
+            if paso == 0:
+                _comprobar_gradiente(parametrizacion, objetivo, capa)
+
             optimizador.step()
 
             # .item() rompe el grafo: sin esto se acumula memoria.
@@ -270,6 +273,28 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     return final, historial
 
 
+class UnidadMuerta(RuntimeError):
+    """La unidad elegida no propaga gradiente a la imagen.
+
+    Se expone como excepcion propia para que la aplicacion pueda capturarla y
+    mostrar un aviso en la interfaz en vez de un traceback.
+    """
+
+
+def _comprobar_gradiente(parametrizacion: nn.Module, objetivo, capa: str) -> None:
+    """Falla pronto si el objetivo no mueve la imagen."""
+    grad = parametrizacion.espectro.grad
+    if grad is not None and torch.any(grad != 0):
+        return
+    raise UnidadMuerta(
+        f"{objetivo} en '{capa}' no propaga gradiente: la unidad esta muerta "
+        f"(un ReLU la deja en cero) y la imagen no cambiaria.\n"
+        f"Opciones: apuntar a la convolucion PRE-ReLU en vez de a la salida "
+        f"del bloque (p.ej. '{capa}.1.conv2' en lugar de '{capa}'), elegir "
+        f"otro canal, o mover (x, y) a otra posicion."
+    )
+
+
 def _variacion_total(x: torch.Tensor) -> torch.Tensor:
     """Variacion total: penaliza el ruido de alta frecuencia que quede."""
     dh = (x[..., 1:, :] - x[..., :-1, :]).abs().mean()
@@ -283,13 +308,33 @@ def cargar_config(ruta: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def nombre_salida(ocfg: dict) -> str:
+    """Nombre de fichero que identifica el objetivo sin ambiguedad.
+
+    Dos objetivos distintos sobre la misma capa y canal (Channel y Neuron) no
+    pueden acabar en el mismo PNG, o uno pisa al otro sin avisar.
+    """
+    capa = str(ocfg["capa"]).replace(".", "_")
+    partes = [capa, str(ocfg.get("tipo", "canal")), str(ocfg["canal"])]
+    if ocfg.get("tipo") == "neurona":
+        x, y = ocfg.get("x"), ocfg.get("y")
+        partes.append("centro" if x is None and y is None else f"{x}x{y}")
+    return "_".join(partes)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=Path, default=Path("configs/feature_viz.yaml"))
+    ap.add_argument("--tipo", choices=["canal", "neurona"], default=None,
+                    help="Channel (canal entero) o Neuron (una posicion)")
     ap.add_argument("--capa", type=str, default=None,
                     help="modulo a maximizar, p.ej. 'fc' o 'layer3.1.conv2'")
-    ap.add_argument("--neurona", type=int, default=None, help="indice de la neurona")
+    ap.add_argument("--canal", type=int, default=None, help="indice z del canal")
+    ap.add_argument("--x", type=int, default=None,
+                    help="fila del mapa; por defecto el centro (solo con --tipo neurona)")
+    ap.add_argument("--y", type=int, default=None,
+                    help="columna del mapa; por defecto el centro")
     ap.add_argument("--pasos", type=int, default=None, help="pasos de optimizacion")
     args = ap.parse_args()
 
@@ -300,10 +345,10 @@ def main() -> int:
     cfg = cargar_config(ruta)
 
     # Solo se sobreescribe lo que se pide por CLI; el resto lo manda el YAML.
-    if args.capa is not None:
-        cfg["objetivo"]["capa"] = args.capa
-    if args.neurona is not None:
-        cfg["objetivo"]["neurona"] = args.neurona
+    for clave, valor in (("tipo", args.tipo), ("capa", args.capa),
+                         ("canal", args.canal), ("x", args.x), ("y", args.y)):
+        if valor is not None:
+            cfg["objetivo"][clave] = valor
     if args.pasos is not None:
         cfg["optimizacion"]["pasos"] = args.pasos
 
@@ -314,8 +359,7 @@ def main() -> int:
 
     destino = RAIZ / cfg["salida"]["directorio"]
     destino.mkdir(parents=True, exist_ok=True)
-    capa = str(cfg["objetivo"]["capa"]).replace(".", "_")
-    fichero = destino / f"{capa}_{cfg['objetivo']['neurona']}.png"
+    fichero = destino / (nombre_salida(cfg["objetivo"]) + ".png")
     save_image(imagen, fichero)
 
     print(f"\nactivacion inicial: {historial[0]:+.4f}")

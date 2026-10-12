@@ -14,8 +14,16 @@ modelo:
   n_clases: 1081          # Pl@ntNet-300K
 
 objetivo:
+  # Los objetivos del articulo, seccion "Optimization Objectives":
+  #   canal   -> Channel,  layer_n[:, :, z]   media del canal en el espacio
+  #   neurona -> Neuron,   layer_n[x, y, z]   una sola posicion del canal
+  tipo: canal
   capa: fc                # 'fc' = capa de salida. Tambien vale 'layer3.1.conv2'.
-  neurona: 0              # indice de la clase (0..1080) o del canal
+  canal: 0                # el indice z: la clase (0..1080) en fc, o el canal
+  # Solo para tipo 'neurona'. null = centro del mapa, como en lucid.
+  # OJO: x es la FILA e y la COLUMNA. Ver la cabecera de objetivos.py.
+  x: null
+  y: null
 
 imagen:
   tamano: 224
