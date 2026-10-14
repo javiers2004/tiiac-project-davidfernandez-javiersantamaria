@@ -34,6 +34,9 @@ imagen:
 
 optimizacion:
   learning_rate: 0.05     # Adam sobre el espectro, no sobre los pixeles
+  # El articulo usa 2560 pasos. Aqui van 256 porque son 18 s en CPU frente a
+  # ~2.9 min, y un barrido de 16 canales pasa de 5 a 45 minutos. Para las
+  # imagenes de la memoria, subirlo a 2560.
   pasos: 256
 
 regularizacion:
@@ -44,11 +47,16 @@ regularizacion:
 
 robustez:
   # Sin esto la optimizacion produce ruido adversarial en vez de patrones.
-  pad: 12
-  jitter: 8
-  jitter_final: 4
+  #
+  # Valores de la nota al pie 9 del articulo, que es lo que se uso para las
+  # imagenes publicadas. OJO: NO coinciden con standard_transforms de lucid
+  # (pad 12, jitter 8, jitter_final 4, escalas 0.9-1.1, rotaciones -10..10).
+  # Son dos fuentes distintas; aqui se sigue el articulo.
+  pad: 16
+  jitter: 16
+  jitter_final: 8
   escalas: [0.95, 0.975, 1.0, 1.025, 1.05]
-  rotaciones: [-5, -2, 0, 2, 5]
+  rotaciones: [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]
 
 normalizacion:
   # OJO: tienen que ser las MISMAS estadisticas con las que se entreno el

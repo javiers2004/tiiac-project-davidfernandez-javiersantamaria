@@ -124,6 +124,26 @@ class Neurona:
         return f"neurona[{self.z}] en {pos}"
 
 
+@dataclass(frozen=True)
+class Suma:
+    """Varios objetivos maximizados a la vez.
+
+    Es el "jointly optimized" de la seccion "Interaction between Neurons" del
+    articulo: la imagen resultante tiene que contentar a todas las unidades a
+    la vez, y eso revela como se combinan.
+    """
+
+    partes: tuple
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        if not self.partes:
+            raise ValueError("una Suma necesita al menos un objetivo")
+        return sum(parte(act) for parte in self.partes)
+
+    def __str__(self) -> str:
+        return " + ".join(str(parte) for parte in self.partes)
+
+
 OBJETIVOS = {"canal": Canal, "neurona": Neurona}
 
 

@@ -179,7 +179,8 @@ def construir_modelo_congelado(mcfg: dict) -> nn.Module:
 
 
 def maximizar_activacion(cfg: dict, run: Any | None = None,
-                         modelo: nn.Module | None = None
+                         modelo: nn.Module | None = None,
+                         objetivo: Any | None = None
                          ) -> tuple[torch.Tensor, list[float]]:
     """Optimiza una imagen de ruido para maximizar la activacion de una neurona.
 
@@ -200,7 +201,9 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
 
     ocfg, icfg, pcfg = cfg["objetivo"], cfg["imagen"], cfg["optimizacion"]
     capa = str(ocfg["capa"])
-    objetivo = construir_objetivo(ocfg)
+    # Si no llega uno ya construido (p.ej. una Suma desde api.py), sale del YAML.
+    if objetivo is None:
+        objetivo = construir_objetivo(ocfg)
 
     # Un generador propio: las semillas globales las fija src/utils/seed.py y
     # no se tocan desde aqui.
