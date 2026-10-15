@@ -23,10 +23,13 @@ from src.interpretability.feature_viz import (
     construir_modelo_congelado,
     maximizar_activacion,
 )
-from src.interpretability.objetivos import Canal, Suma, resolver_modulo
+from src.interpretability.objetivos import Canal, Neurona, Suma, resolver_modulo
 
 RAIZ = Path(__file__).resolve().parents[2]
 CONFIG = RAIZ / "configs" / "feature_viz.yaml"
+
+
+METADATOS = RAIZ / "data" / "metadata"
 
 
 @dataclass(frozen=True)
@@ -41,20 +44,63 @@ class Activacion:
         return f"{self.capa}[{self.canal}] = {self.valor:.3f}"
 
 
+@dataclass(frozen=True)
+class Prediccion:
+    """Una clase predicha, con su nombre de especie si esta disponible."""
+
+    clase: int
+    probabilidad: float
+    especie: str | None = None   # id de Pl@ntNet
+    nombre: str | None = None    # nombre cientifico
+
+    def __str__(self) -> str:
+        quien = self.nombre or f"clase {self.clase}"
+        return f"{quien} ({self.probabilidad:.1%})"
+
+
+def cargar_especies() -> dict[int, tuple[str, str]]:
+    """Mapa clase -> (id de especie, nombre cientifico).
+
+    Devuelve {} si los metadatos no estan descargados, para que la aplicacion
+    siga funcionando enseñando numeros de clase en vez de romperse. Los
+    ficheros viven en data/, que no va al repositorio: se obtienen con
+    `python scripts/get_data.py --solo-metadatos`.
+    """
+    idx = METADATOS / "class_idx_to_species_id.json"
+    nombres = METADATOS / "plantnet300K_species_id_2_name.json"
+    if not (idx.is_file() and nombres.is_file()):
+        return {}
+
+    import json
+    mapa = json.loads(idx.read_text(encoding="utf-8"))
+    nom = json.loads(nombres.read_text(encoding="utf-8"))
+    return {int(k): (v, nom.get(v, "?")) for k, v in mapa.items()}
+
+
 def cargar_modelo(cfg: dict | None = None) -> nn.Module:
     """Carga el checkpoint una vez, para no releerlo en cada llamada."""
     return construir_modelo_congelado((cfg or cargar_config(CONFIG))["modelo"])
 
 
-def predecir(imagen, modelo: nn.Module | None = None,
-             cfg: dict | None = None) -> tuple[int, float]:
-    """Devuelve (clase predicha, probabilidad) para una foto."""
+def predecir(imagen, top_k: int = 1, modelo: nn.Module | None = None,
+             cfg: dict | None = None) -> list[Prediccion]:
+    """Las top_k especies mas probables para una foto.
+
+    Si los metadatos no estan descargados, las predicciones llegan sin
+    nombre: la clase sigue siendo correcta, solo que sin traducir.
+    """
     cfg = cfg or cargar_config(CONFIG)
     modelo = modelo or cargar_modelo(cfg)
     with torch.no_grad():
         probas = modelo(_preparar(imagen, cfg)).softmax(dim=-1)
-    prob, clase = probas[0].max(dim=0)
-    return int(clase), float(prob)
+
+    especies = cargar_especies()
+    valores, clases = probas[0].topk(min(top_k, probas.shape[-1]))
+    salida = []
+    for p, c in zip(valores, clases):
+        sid, nombre = especies.get(int(c), (None, None))
+        salida.append(Prediccion(int(c), float(p), sid, nombre))
+    return salida
 
 
 def listar_neuronas(imagen, capas: str | list[str] = "layer4", top_k: int = 10,
@@ -108,6 +154,7 @@ def listar_neuronas(imagen, capas: str | list[str] = "layer4", top_k: int = 10,
 
 
 def generar_imagen(neuronas: Activacion | list[Activacion],
+                   tipo: str = "canal",
                    pasos: int | None = None,
                    modelo: nn.Module | None = None,
                    cfg: dict | None = None) -> torch.Tensor:
@@ -116,6 +163,10 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
     Args:
         neuronas: una Activacion o varias. Si son varias se maximizan a la
             vez, que es el objetivo "jointly optimized" del articulo.
+        tipo: 'canal' promedia el canal entero (Channel del articulo);
+            'neurona' usa solo la posicion central (Neuron). En las capas
+            profundas apenas se distinguen, porque una sola posicion ya ve
+            toda la imagen; en las tempranas la diferencia es enorme.
         pasos: pasos de optimizacion; por defecto los del YAML.
         modelo: el modelo ya cargado.
         cfg: configuracion; por defecto configs/feature_viz.yaml.
@@ -136,12 +187,16 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
             f"han llegado de {sorted(capas)}. El bucle engancha una sola capa."
         )
 
-    cfg["objetivo"] = {"tipo": "canal", "capa": neuronas[0].capa,
+    if tipo not in ("canal", "neurona"):
+        raise ValueError(f"tipo desconocido: '{tipo}'. Opciones: canal, neurona")
+
+    cfg["objetivo"] = {"tipo": tipo, "capa": neuronas[0].capa,
                        "canal": neuronas[0].canal}
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    objetivo = Suma(tuple(Canal(n.canal) for n in neuronas))
+    construir = Canal if tipo == "canal" else Neurona
+    objetivo = Suma(tuple(construir(n.canal) for n in neuronas))
     imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo)
     return imagen
 
