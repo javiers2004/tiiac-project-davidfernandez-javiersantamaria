@@ -1,4 +1,5 @@
-"""Tests de los objetivos del articulo: Neuron, Channel, Layer y Class Logits.
+"""Tests de los objetivos del articulo: Neuron, Channel, Layer, Class Logits y
+Class Probability.
 
 Casi todo lo que puede salir mal aqui sale mal EN SILENCIO: un eje cambiado o
 un centro mal redondeado no dan error, dan otra neurona y una imagen que
@@ -16,6 +17,7 @@ from src.interpretability.objetivos import (
     FormaCapa,
     Logit,
     Neurona,
+    Probabilidad,
     construir_objetivo,
     inspeccionar_capa,
     resolver_modulo,
@@ -132,6 +134,41 @@ def test_logit_fuera_de_la_salida_falla():
 def test_una_clase_inexistente_falla():
     with pytest.raises(IndexError, match="la clase 10 no existe"):
         Logit(10)(torch.randn(1, 10))
+    with pytest.raises(IndexError, match="la clase 10 no existe"):
+        Probabilidad(10)(torch.randn(1, 10))
+
+
+# --- Class Probability: softmax[k] ---------------------------------------
+
+def test_probabilidad_es_la_softmax_de_la_clase():
+    act = torch.randn(1, 10)
+    assert torch.allclose(Probabilidad(3)(act), act.softmax(dim=-1)[0, 3])
+
+
+def test_las_probabilidades_suman_uno():
+    """Si la softmax se tomase sobre el eje equivocado (el de batch), esto no
+    se cumpliria y no habria ningun otro error."""
+    act = torch.randn(1, 10)
+    total = sum(Probabilidad(k)(act) for k in range(10))
+    assert total.item() == pytest.approx(1.0)
+
+
+def test_probabilidad_sube_sin_tocar_el_logit():
+    """El motivo por el que el articulo prefiere los logits.
+
+    Mismo logit de la clase 0 en las dos salidas; en la segunda solo se han
+    hundido las demas. Logit no ve diferencia, Probabilidad si: puede subir
+    sin que la imagen se parezca mas a la clase.
+    """
+    antes = torch.tensor([[2.0, 1.0, 1.0, 1.0]])
+    despues = torch.tensor([[2.0, -3.0, -3.0, -3.0]])
+    assert Logit(0)(antes) == Logit(0)(despues)
+    assert Probabilidad(0)(despues) > Probabilidad(0)(antes)
+
+
+def test_probabilidad_fuera_de_la_salida_falla():
+    with pytest.raises(ValueError, match="capa de salida"):
+        Probabilidad(0)(torch.randn(1, 512, 7, 7))
 
 
 # --- Rangos ---------------------------------------------------------------
@@ -163,6 +200,7 @@ def test_capa_no_necesita_canal():
 def test_logit_lee_la_clase_de_canal():
     """En fc el indice z es la clase, igual que con Channel."""
     assert construir_objetivo({"tipo": "logit", "canal": 7}) == Logit(7)
+    assert construir_objetivo({"tipo": "probabilidad", "canal": 7}) == Probabilidad(7)
 
 
 def test_neurona_sin_x_ni_y_queda_en_el_centro():

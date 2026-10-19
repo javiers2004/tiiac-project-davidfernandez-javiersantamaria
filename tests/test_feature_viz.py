@@ -140,6 +140,18 @@ def test_el_logit_de_la_clase_sube():
     assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
 
 
+def test_la_probabilidad_de_la_clase_sube():
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "probabilidad", "capa": "fc", "canal": 3}
+    cfg["optimizacion"]["pasos"] = 12
+    _, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+    assert all(0.0 <= p <= 1.0 for p in historial)
+    primeros = sum(historial[:4]) / 4
+    ultimos = sum(historial[-4:]) / 4
+    assert ultimos > primeros, f"de {primeros:.4f} a {ultimos:.4f}"
+
+
 def test_logit_y_canal_en_fc_dan_la_misma_imagen():
     """Class Logits es Channel sobre fc; la imagen tiene que ser identica."""
     modelo = _modelo_congelado()

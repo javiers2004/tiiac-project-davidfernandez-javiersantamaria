@@ -8,6 +8,7 @@ que esa neurona busca.
     python -m src.interpretability.feature_viz --capa layer3.1.conv2 --neurona 42
     python -m src.interpretability.feature_viz --tipo capa --capa layer3
     python -m src.interpretability.feature_viz --tipo logit --capa fc --canal 7
+    python -m src.interpretability.feature_viz --tipo probabilidad --capa fc --canal 7
 
 Tres detalles sin los cuales esto NO funciona, y que son casi toda la calidad
 del resultado:
@@ -22,8 +23,10 @@ del resultado:
      rotacion aleatorios. Obliga a la imagen a activar la neurona desde
      cualquier encuadre, y eso elimina el ruido que solo funciona en una
      posicion exacta.
-  3. Se maximiza el LOGIT, no la softmax. Maximizar la probabilidad premia
-     hundir las otras 1080 clases, que es mas facil que representar la propia.
+  3. Para clases se maximiza el LOGIT, no la softmax. Maximizar la
+     probabilidad premia hundir las otras 1080 clases, que es mas facil que
+     representar la propia. El objetivo 'probabilidad' existe para replicar
+     esa comparacion del articulo, no para usarlo por defecto.
 
 Los pesos van congelados: el unico tensor con gradiente es la imagen.
 """
@@ -245,8 +248,8 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
 
             # El objetivo decide la reduccion: Channel promedia el canal
             # entero, Neuron toma una sola posicion, Layer promedia el
-            # cuadrado de la capa entera y Logit toma una clase de la
-            # salida. Ver objetivos.py.
+            # cuadrado de la capa entera, Logit toma una clase de la salida
+            # y Probabilidad le pasa antes la softmax. Ver objetivos.py.
             activacion = objetivo(capturado["act"])
 
             perdida = -activacion
@@ -341,12 +344,14 @@ def main() -> int:
     ap.add_argument("--config", type=Path, default=Path("configs/feature_viz.yaml"))
     ap.add_argument("--tipo", choices=list(OBJETIVOS), default=None,
                     help="Channel (canal entero), Neuron (una posicion), "
-                         "Layer (capa entera al cuadrado, DeepDream) o "
-                         "Class Logits (logit de la clase, solo en fc)")
+                         "Layer (capa entera al cuadrado, DeepDream), "
+                         "Class Logits (logit de la clase, solo en fc) o "
+                         "Class Probability (softmax de la clase, solo en fc)")
     ap.add_argument("--capa", type=str, default=None,
                     help="modulo a maximizar, p.ej. 'fc' o 'layer3.1.conv2'")
     ap.add_argument("--canal", type=int, default=None,
-                    help="indice z del canal, o la clase con --tipo logit")
+                    help="indice z del canal, o la clase con --tipo logit "
+                         "o probabilidad")
     ap.add_argument("--x", type=int, default=None,
                     help="fila del mapa; por defecto el centro (solo con --tipo neurona)")
     ap.add_argument("--y", type=int, default=None,

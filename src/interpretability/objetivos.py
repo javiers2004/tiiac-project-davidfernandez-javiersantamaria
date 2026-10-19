@@ -7,6 +7,7 @@ Replica los objetivos del articulo de Olah et al., "Feature Visualization"
     Channel   layer_n[:, :, z]     el canal entero, promediado en el espacio
     Layer     layer_n[:, :, :]^2   la capa entera al cuadrado (DeepDream)
     Logit     pre_softmax[k]       la salida de la clase k antes de la softmax
+    Prob.     softmax[k]           la probabilidad de la clase k
 
 La unica diferencia entre ellos es la reduccion: que parte de la capa se toma
 y como se resume en un escalar. Todo lo demas (parametrizacion en Fourier,
@@ -180,6 +181,33 @@ class Logit:
 
 
 @dataclass(frozen=True)
+class Probabilidad:
+    """Objetivo Class Probability: softmax[k].
+
+    La probabilidad de la clase k. Se aplica la softmax aqui, sobre los
+    logits que captura el hook de 'fc', porque el modelo no la tiene como
+    modulo propio.
+
+    Esta para replicar la comparacion del articulo, no como objetivo por
+    defecto. softmax[k] = exp(z_k) / sum_j exp(z_j): sube igual subiendo z_k
+    que hundiendo las otras 1080 clases, y lo segundo suele ser mas facil.
+    La imagen resultante tiende a ser "lo que no es ninguna otra clase" mas
+    que "lo que es la clase k". Ademas se satura: cuando la probabilidad se
+    acerca a 1 el gradiente se apaga, aunque el logit pueda seguir subiendo.
+    """
+
+    clase: int
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        _validar_salida(act, "Class Probability")
+        _validar_clase(act, self.clase)
+        return act.softmax(dim=-1)[:, self.clase].mean()
+
+    def __str__(self) -> str:
+        return f"softmax[{self.clase}]"
+
+
+@dataclass(frozen=True)
 class Suma:
     """Varios objetivos maximizados a la vez.
 
@@ -199,16 +227,19 @@ class Suma:
         return " + ".join(str(parte) for parte in self.partes)
 
 
-OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa, "logit": Logit}
+OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa,
+             "logit": Logit, "probabilidad": Probabilidad}
 
 
-def construir_objetivo(ocfg: dict) -> Canal | Neurona | Capa | Logit:
+def construir_objetivo(ocfg: dict
+                       ) -> Canal | Neurona | Capa | Logit | Probabilidad:
     """Crea el objetivo a partir de la subconfiguracion 'objetivo' del YAML.
 
     Args:
-        ocfg: dict con 'tipo' ('canal', 'neurona', 'capa' o 'logit'),
-            'canal' (el indice z, que en 'logit' es la clase y que 'capa' no
-            usa) y, solo para 'neurona', 'x' e 'y' opcionales.
+        ocfg: dict con 'tipo' ('canal', 'neurona', 'capa', 'logit' o
+            'probabilidad'), 'canal' (el indice z, que en 'logit' y
+            'probabilidad' es la clase y que 'capa' no usa) y, solo para
+            'neurona', 'x' e 'y' opcionales.
 
     Returns:
         El objetivo, invocable sobre el tensor de activacion de la capa.
@@ -224,6 +255,8 @@ def construir_objetivo(ocfg: dict) -> Canal | Neurona | Capa | Logit:
         return Canal(z)
     if tipo == "logit":
         return Logit(z)
+    if tipo == "probabilidad":
+        return Probabilidad(z)
     x, y = ocfg.get("x"), ocfg.get("y")
     return Neurona(z, None if x is None else int(x), None if y is None else int(y))
 

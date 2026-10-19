@@ -21,6 +21,9 @@ objetivo:
   #                                           (DeepDream); ignora 'canal'
   #   logit   -> Class Logits, pre_softmax[k] el logit de la clase k=canal;
   #                                           solo con capa: fc
+  #   probabilidad -> Class Probability, softmax[k]; solo con capa: fc.
+  #                   Para comparar con 'logit', como en el articulo: sube
+  #                   tambien hundiendo las demas clases.
   tipo: canal
   capa: fc                # 'fc' = capa de salida. Tambien vale 'layer3.1.conv2'.
   canal: 0                # el indice z: la clase (0..1080) en fc, o el canal

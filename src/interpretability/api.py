@@ -29,6 +29,7 @@ from src.interpretability.objetivos import (
     Capa,
     Logit,
     Neurona,
+    Probabilidad,
     Suma,
     resolver_modulo,
 )
@@ -38,7 +39,8 @@ CONFIG = RAIZ / "configs" / "feature_viz.yaml"
 
 # Los objetivos que se construyen a partir de una Activacion (capa + canal).
 # Layer no esta porque no elige unidad: va por generar_deepdream().
-POR_NEURONA = {"canal": Canal, "neurona": Neurona, "logit": Logit}
+POR_NEURONA = {"canal": Canal, "neurona": Neurona, "logit": Logit,
+               "probabilidad": Probabilidad}
 
 
 METADATOS = RAIZ / "data" / "metadata"
@@ -182,6 +184,10 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
             'logit' maximiza el logit de la clase (Class Logits); las
             neuronas tienen que ser de 'fc', p.ej. las que devuelve
             listar_neuronas(foto, capas='fc'), cuyo canal es la clase.
+            'probabilidad' maximiza la softmax de la clase (Class
+            Probability), con las mismas neuronas que 'logit'. Sirve para
+            comparar: tiende a hundir las demas clases en vez de dibujar
+            la propia.
         pasos: pasos de optimizacion; por defecto los del YAML.
         modelo: el modelo ya cargado.
         cfg: configuracion; por defecto configs/feature_viz.yaml.
