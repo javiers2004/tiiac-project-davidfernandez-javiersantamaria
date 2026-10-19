@@ -6,6 +6,7 @@ Replica los objetivos del articulo de Olah et al., "Feature Visualization"
     Neuron    layer_n[x, y, z]     una posicion concreta de un canal
     Channel   layer_n[:, :, z]     el canal entero, promediado en el espacio
     Layer     layer_n[:, :, :]^2   la capa entera al cuadrado (DeepDream)
+    Logit     pre_softmax[k]       la salida de la clase k antes de la softmax
 
 La unica diferencia entre ellos es la reduccion: que parte de la capa se toma
 y como se resume en un escalar. Todo lo demas (parametrizacion en Fourier,
@@ -69,6 +70,8 @@ class Canal:
 
     En una capa sin extension espacial (la lineal de salida) se reduce al
     logit de la clase z, que es justo el objetivo Class Logits del articulo.
+    Da el mismo numero que Logit(z); Logit existe para nombrarlo y para
+    fallar si la capa no es la de salida.
     """
 
     z: int
@@ -113,7 +116,7 @@ class Neurona:
             raise ValueError(
                 f"el objetivo Neuron necesita una capa con extension espacial "
                 f"(N,C,H,W); esta da {tuple(act.shape)}. En la capa de salida "
-                f"usa el objetivo 'canal', que ahi es el logit de la clase."
+                f"usa el objetivo 'logit'."
             )
         _validar_canal(act, self.z)
         x, y = self.posicion(act.shape[2], act.shape[3])
@@ -152,6 +155,31 @@ class Capa:
 
 
 @dataclass(frozen=True)
+class Logit:
+    """Objetivo Class Logits: pre_softmax[k].
+
+    La salida de la clase k ANTES de la softmax, en la capa de salida ('fc').
+    Es lo que el articulo usa para visualizar clases: la imagen tiene que
+    parecerse a la clase, no solo dejar de parecerse a las demas (ver
+    Probabilidad).
+
+    Numericamente es Canal(k) sobre 'fc'. La diferencia es que este falla si
+    la capa no es la de salida: con Canal(k) sobre 'layer4' no hay error, se
+    optimiza el canal k de una conv y la imagen se etiqueta como una clase.
+    """
+
+    clase: int
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        _validar_salida(act, "Class Logits")
+        _validar_clase(act, self.clase)
+        return act[:, self.clase].mean()
+
+    def __str__(self) -> str:
+        return f"logit[{self.clase}]"
+
+
+@dataclass(frozen=True)
 class Suma:
     """Varios objetivos maximizados a la vez.
 
@@ -171,16 +199,16 @@ class Suma:
         return " + ".join(str(parte) for parte in self.partes)
 
 
-OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa}
+OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa, "logit": Logit}
 
 
-def construir_objetivo(ocfg: dict) -> Canal | Neurona | Capa:
+def construir_objetivo(ocfg: dict) -> Canal | Neurona | Capa | Logit:
     """Crea el objetivo a partir de la subconfiguracion 'objetivo' del YAML.
 
     Args:
-        ocfg: dict con 'tipo' ('canal', 'neurona' o 'capa'), 'canal' (el
-            indice z, que 'capa' no usa) y, solo para 'neurona', 'x' e 'y'
-            opcionales.
+        ocfg: dict con 'tipo' ('canal', 'neurona', 'capa' o 'logit'),
+            'canal' (el indice z, que en 'logit' es la clase y que 'capa' no
+            usa) y, solo para 'neurona', 'x' e 'y' opcionales.
 
     Returns:
         El objetivo, invocable sobre el tensor de activacion de la capa.
@@ -194,6 +222,8 @@ def construir_objetivo(ocfg: dict) -> Canal | Neurona | Capa:
     z = int(ocfg["canal"])
     if tipo == "canal":
         return Canal(z)
+    if tipo == "logit":
+        return Logit(z)
     x, y = ocfg.get("x"), ocfg.get("y")
     return Neurona(z, None if x is None else int(x), None if y is None else int(y))
 
@@ -275,3 +305,18 @@ def _validar_canal(act: torch.Tensor, z: int) -> None:
     if not 0 <= z < act.shape[1]:
         raise IndexError(f"la capa tiene {act.shape[1]} canales; "
                          f"el canal {z} no existe")
+
+
+def _validar_salida(act: torch.Tensor, nombre: str) -> None:
+    """Los objetivos de clase solo tienen sentido sobre la capa de salida."""
+    if act.dim() != 2:
+        raise ValueError(
+            f"el objetivo {nombre} necesita la capa de salida (N, clases); "
+            f"esta da {tuple(act.shape)}. Usa capa: fc."
+        )
+
+
+def _validar_clase(act: torch.Tensor, k: int) -> None:
+    if not 0 <= k < act.shape[1]:
+        raise IndexError(f"la salida tiene {act.shape[1]} clases; "
+                         f"la clase {k} no existe")

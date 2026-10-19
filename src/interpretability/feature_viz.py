@@ -7,6 +7,7 @@ que esa neurona busca.
     python -m src.interpretability.feature_viz --neurona 0
     python -m src.interpretability.feature_viz --capa layer3.1.conv2 --neurona 42
     python -m src.interpretability.feature_viz --tipo capa --capa layer3
+    python -m src.interpretability.feature_viz --tipo logit --capa fc --canal 7
 
 Tres detalles sin los cuales esto NO funciona, y que son casi toda la calidad
 del resultado:
@@ -243,8 +244,9 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             modelo((entrada - media) / desv)
 
             # El objetivo decide la reduccion: Channel promedia el canal
-            # entero, Neuron toma una sola posicion y Layer promedia el
-            # cuadrado de la capa entera. Ver objetivos.py.
+            # entero, Neuron toma una sola posicion, Layer promedia el
+            # cuadrado de la capa entera y Logit toma una clase de la
+            # salida. Ver objetivos.py.
             activacion = objetivo(capturado["act"])
 
             perdida = -activacion
@@ -338,11 +340,13 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=Path, default=Path("configs/feature_viz.yaml"))
     ap.add_argument("--tipo", choices=list(OBJETIVOS), default=None,
-                    help="Channel (canal entero), Neuron (una posicion) o "
-                         "Layer (capa entera al cuadrado, DeepDream)")
+                    help="Channel (canal entero), Neuron (una posicion), "
+                         "Layer (capa entera al cuadrado, DeepDream) o "
+                         "Class Logits (logit de la clase, solo en fc)")
     ap.add_argument("--capa", type=str, default=None,
                     help="modulo a maximizar, p.ej. 'fc' o 'layer3.1.conv2'")
-    ap.add_argument("--canal", type=int, default=None, help="indice z del canal")
+    ap.add_argument("--canal", type=int, default=None,
+                    help="indice z del canal, o la clase con --tipo logit")
     ap.add_argument("--x", type=int, default=None,
                     help="fila del mapa; por defecto el centro (solo con --tipo neurona)")
     ap.add_argument("--y", type=int, default=None,

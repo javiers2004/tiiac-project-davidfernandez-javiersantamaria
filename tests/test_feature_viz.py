@@ -129,6 +129,27 @@ def test_deepdream_sube_la_energia_de_la_capa():
     assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
 
 
+def test_el_logit_de_la_clase_sube():
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "logit", "capa": "fc", "canal": 3}
+    cfg["optimizacion"]["pasos"] = 12
+    _, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+    primeros = sum(historial[:4]) / 4
+    ultimos = sum(historial[-4:]) / 4
+    assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
+
+
+def test_logit_y_canal_en_fc_dan_la_misma_imagen():
+    """Class Logits es Channel sobre fc; la imagen tiene que ser identica."""
+    modelo = _modelo_congelado()
+    logit_cfg = copy.deepcopy(CFG)
+    logit_cfg["objetivo"]["tipo"] = "logit"
+    a, _ = maximizar_activacion(CFG, modelo=modelo)
+    b, _ = maximizar_activacion(logit_cfg, modelo=modelo)
+    assert torch.allclose(a, b)
+
+
 def test_un_canal_inexistente_falla_pronto():
     """Sin la comprobacion, un indice fuera de rango revienta con un error de
     indexado de torch mucho mas abajo y cuesta de leer."""

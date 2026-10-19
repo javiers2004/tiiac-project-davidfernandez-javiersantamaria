@@ -1,4 +1,4 @@
-"""Tests de los objetivos del articulo: Neuron, Channel y Layer.
+"""Tests de los objetivos del articulo: Neuron, Channel, Layer y Class Logits.
 
 Casi todo lo que puede salir mal aqui sale mal EN SILENCIO: un eje cambiado o
 un centro mal redondeado no dan error, dan otra neurona y una imagen que
@@ -14,6 +14,7 @@ from src.interpretability.objetivos import (
     Canal,
     Capa,
     FormaCapa,
+    Logit,
     Neurona,
     construir_objetivo,
     inspeccionar_capa,
@@ -75,7 +76,7 @@ def test_canal_y_neurona_coinciden_si_el_mapa_es_1x1():
 
 
 def test_neurona_sin_extension_espacial_falla_con_mensaje_util():
-    with pytest.raises(ValueError, match="canal"):
+    with pytest.raises(ValueError, match="logit"):
         Neurona(0)(torch.randn(1, 10))
 
 
@@ -106,6 +107,33 @@ def test_capa_cuenta_las_activaciones_negativas():
     assert torch.allclose(Capa()(act), Capa()(-act))
 
 
+# --- Class Logits: pre_softmax[k] ----------------------------------------
+
+def test_logit_es_la_salida_de_la_clase():
+    act = torch.randn(1, 10)
+    assert torch.allclose(Logit(3)(act), act[0, 3])
+
+
+def test_logit_coincide_con_canal_sobre_la_salida():
+    """Mismo numero que Canal(k) en fc: Logit no cambia la optimizacion de
+    clases que ya se hacia, solo la nombra y la protege."""
+    act = torch.randn(1, 10)
+    for k in range(10):
+        assert torch.allclose(Logit(k)(act), Canal(k)(act))
+
+
+def test_logit_fuera_de_la_salida_falla():
+    """Canal(k) sobre layer4 optimiza el canal k de una conv sin quejarse;
+    Logit(k) no puede acabar etiquetando eso como una clase."""
+    with pytest.raises(ValueError, match="capa de salida"):
+        Logit(0)(torch.randn(1, 512, 7, 7))
+
+
+def test_una_clase_inexistente_falla():
+    with pytest.raises(IndexError, match="la clase 10 no existe"):
+        Logit(10)(torch.randn(1, 10))
+
+
 # --- Rangos ---------------------------------------------------------------
 
 def test_un_canal_inexistente_falla():
@@ -130,6 +158,11 @@ def test_construir_objetivo_lee_el_tipo():
 def test_capa_no_necesita_canal():
     """Layer no elige unidad: el YAML no tiene por que traer 'canal'."""
     assert construir_objetivo({"tipo": "capa"}) == Capa()
+
+
+def test_logit_lee_la_clase_de_canal():
+    """En fc el indice z es la clase, igual que con Channel."""
+    assert construir_objetivo({"tipo": "logit", "canal": 7}) == Logit(7)
 
 
 def test_neurona_sin_x_ni_y_queda_en_el_centro():

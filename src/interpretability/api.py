@@ -27,6 +27,7 @@ from src.interpretability.feature_viz import (
 from src.interpretability.objetivos import (
     Canal,
     Capa,
+    Logit,
     Neurona,
     Suma,
     resolver_modulo,
@@ -34,6 +35,10 @@ from src.interpretability.objetivos import (
 
 RAIZ = Path(__file__).resolve().parents[2]
 CONFIG = RAIZ / "configs" / "feature_viz.yaml"
+
+# Los objetivos que se construyen a partir de una Activacion (capa + canal).
+# Layer no esta porque no elige unidad: va por generar_deepdream().
+POR_NEURONA = {"canal": Canal, "neurona": Neurona, "logit": Logit}
 
 
 METADATOS = RAIZ / "data" / "metadata"
@@ -174,6 +179,9 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
             'neurona' usa solo la posicion central (Neuron). En las capas
             profundas apenas se distinguen, porque una sola posicion ya ve
             toda la imagen; en las tempranas la diferencia es enorme.
+            'logit' maximiza el logit de la clase (Class Logits); las
+            neuronas tienen que ser de 'fc', p.ej. las que devuelve
+            listar_neuronas(foto, capas='fc'), cuyo canal es la clase.
         pasos: pasos de optimizacion; por defecto los del YAML.
         modelo: el modelo ya cargado.
         cfg: configuracion; por defecto configs/feature_viz.yaml.
@@ -194,15 +202,16 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
             f"han llegado de {sorted(capas)}. El bucle engancha una sola capa."
         )
 
-    if tipo not in ("canal", "neurona"):
-        raise ValueError(f"tipo desconocido: '{tipo}'. Opciones: canal, neurona")
+    if tipo not in POR_NEURONA:
+        raise ValueError(f"tipo desconocido: '{tipo}'. "
+                         f"Opciones: {', '.join(POR_NEURONA)}")
 
     cfg["objetivo"] = {"tipo": tipo, "capa": neuronas[0].capa,
                        "canal": neuronas[0].canal}
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    construir = Canal if tipo == "canal" else Neurona
+    construir = POR_NEURONA[tipo]
     objetivo = Suma(tuple(construir(n.canal) for n in neuronas))
     imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo)
     return imagen
