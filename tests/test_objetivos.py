@@ -1,4 +1,4 @@
-"""Tests de los objetivos Neuron y Channel.
+"""Tests de los objetivos del articulo: Neuron, Channel y Layer.
 
 Casi todo lo que puede salir mal aqui sale mal EN SILENCIO: un eje cambiado o
 un centro mal redondeado no dan error, dan otra neurona y una imagen que
@@ -12,6 +12,7 @@ from torchvision.models import resnet18
 
 from src.interpretability.objetivos import (
     Canal,
+    Capa,
     FormaCapa,
     Neurona,
     construir_objetivo,
@@ -78,6 +79,33 @@ def test_neurona_sin_extension_espacial_falla_con_mensaje_util():
         Neurona(0)(torch.randn(1, 10))
 
 
+# --- Layer (DeepDream): layer_n[:, :, :]^2 -------------------------------
+
+def test_capa_es_la_media_del_cuadrado_de_toda_la_capa():
+    """Todos los canales y todas las posiciones, no un canal concreto."""
+    act = torch.arange(2 * 3 * 4, dtype=torch.float32).view(1, 2, 3, 4)
+    assert torch.allclose(Capa()(act), act.pow(2).mean())
+
+
+def test_capa_premia_concentrar_la_activacion():
+    """Lo que el cuadrado aporta frente a una media a secas.
+
+    Las dos capas reparten la MISMA activacion total; Channel sobre ellas da
+    lo mismo, Layer no. Si alguien quitase el cuadrado, esto lo detecta.
+    """
+    concentrada = torch.tensor([4.0, 0.0, 0.0, 0.0]).view(1, 4, 1, 1)
+    repartida = torch.ones(1, 4, 1, 1)
+    assert concentrada.mean() == repartida.mean()
+    assert Capa()(concentrada).item() == 4.0
+    assert Capa()(repartida).item() == 1.0
+
+
+def test_capa_cuenta_las_activaciones_negativas():
+    """En una conv pre-ReLU, hundir una unidad puntua igual que subirla."""
+    act = torch.randn(1, 3, 4, 4)
+    assert torch.allclose(Capa()(act), Capa()(-act))
+
+
 # --- Rangos ---------------------------------------------------------------
 
 def test_un_canal_inexistente_falla():
@@ -97,6 +125,11 @@ def test_construir_objetivo_lee_el_tipo():
     assert construir_objetivo({"tipo": "canal", "canal": 5}) == Canal(5)
     assert construir_objetivo(
         {"tipo": "neurona", "canal": 5, "x": 1, "y": 2}) == Neurona(5, 1, 2)
+
+
+def test_capa_no_necesita_canal():
+    """Layer no elige unidad: el YAML no tiene por que traer 'canal'."""
+    assert construir_objetivo({"tipo": "capa"}) == Capa()
 
 
 def test_neurona_sin_x_ni_y_queda_en_el_centro():

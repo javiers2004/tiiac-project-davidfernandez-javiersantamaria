@@ -117,6 +117,18 @@ def test_la_activacion_sube():
     assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
 
 
+def test_deepdream_sube_la_energia_de_la_capa():
+    """El mismo bucle, con el objetivo Layer sobre una capa intermedia."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "capa", "capa": "layer2"}
+    cfg["optimizacion"]["pasos"] = 12
+    _, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+    primeros = sum(historial[:4]) / 4
+    ultimos = sum(historial[-4:]) / 4
+    assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
+
+
 def test_un_canal_inexistente_falla_pronto():
     """Sin la comprobacion, un indice fuera de rango revienta con un error de
     indexado de torch mucho mas abajo y cuesta de leer."""
@@ -152,6 +164,14 @@ def test_el_nombre_del_fichero_distingue_los_dos_objetivos():
     canal = nombre_salida({**base, "tipo": "canal"})
     neurona = nombre_salida({**base, "tipo": "neurona", "x": None, "y": None})
     assert canal != neurona
+
+
+def test_el_nombre_del_deepdream_no_depende_del_canal():
+    """Layer no elige canal: lo que quede en el YAML no puede cambiar el
+    nombre del PNG, o el mismo DeepDream se guardaria dos veces."""
+    a = nombre_salida({"tipo": "capa", "capa": "layer3", "canal": 0})
+    b = nombre_salida({"tipo": "capa", "capa": "layer3", "canal": 42})
+    assert a == b == "layer3_capa"
 
 
 def test_la_misma_seed_da_la_misma_imagen():

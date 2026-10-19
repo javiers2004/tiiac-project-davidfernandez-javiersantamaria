@@ -5,10 +5,11 @@ Replica los objetivos del articulo de Olah et al., "Feature Visualization"
 
     Neuron    layer_n[x, y, z]     una posicion concreta de un canal
     Channel   layer_n[:, :, z]     el canal entero, promediado en el espacio
+    Layer     layer_n[:, :, :]^2   la capa entera al cuadrado (DeepDream)
 
-La unica diferencia entre los dos es la reduccion espacial. Todo lo demas
-(parametrizacion en Fourier, decorrelacion de color, robustez) es comun y vive
-en feature_viz.py.
+La unica diferencia entre ellos es la reduccion: que parte de la capa se toma
+y como se resume en un escalar. Todo lo demas (parametrizacion en Fourier,
+decorrelacion de color, robustez) es comun y vive en feature_viz.py.
 
 ORDEN DE EJES. El articulo y lucid trabajan en NHWC y escriben layer[x, y, z].
 PyTorch es NCHW. La traduccion es:
@@ -125,6 +126,32 @@ class Neurona:
 
 
 @dataclass(frozen=True)
+class Capa:
+    """Objetivo Layer (DeepDream): layer_n[:, :, :]^2.
+
+    Media del CUADRADO de toda la capa: todos los canales, todas las
+    posiciones. No elige unidad, asi que no lleva z: la imagen amplifica lo
+    que la capa ya "ve" en ella, sea lo que sea.
+
+    El cuadrado no es un detalle. Con la media a secas, repartir una misma
+    cantidad de activacion entre muchas unidades o concentrarla en unas pocas
+    da igual; con el cuadrado, concentrar paga mas. Por eso los DeepDream
+    acaban dominados por unos pocos patrones repetidos en vez de por un gris
+    que excite un poco a todo. Y en una capa pre-ReLU (una conv suelta) el
+    cuadrado cuenta tambien las activaciones negativas: empujar una unidad
+    hacia abajo puntua igual que hacia arriba.
+
+    Referencia: lucid.optvis.objectives.deepdream, que es reduce_mean(T**2).
+    """
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        return act.pow(2).mean()
+
+    def __str__(self) -> str:
+        return "capa^2"
+
+
+@dataclass(frozen=True)
 class Suma:
     """Varios objetivos maximizados a la vez.
 
@@ -144,15 +171,16 @@ class Suma:
         return " + ".join(str(parte) for parte in self.partes)
 
 
-OBJETIVOS = {"canal": Canal, "neurona": Neurona}
+OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa}
 
 
-def construir_objetivo(ocfg: dict) -> Canal | Neurona:
+def construir_objetivo(ocfg: dict) -> Canal | Neurona | Capa:
     """Crea el objetivo a partir de la subconfiguracion 'objetivo' del YAML.
 
     Args:
-        ocfg: dict con 'tipo' ('canal' o 'neurona'), 'canal' (el indice z) y,
-            solo para 'neurona', 'x' e 'y' opcionales.
+        ocfg: dict con 'tipo' ('canal', 'neurona' o 'capa'), 'canal' (el
+            indice z, que 'capa' no usa) y, solo para 'neurona', 'x' e 'y'
+            opcionales.
 
     Returns:
         El objetivo, invocable sobre el tensor de activacion de la capa.
@@ -161,6 +189,8 @@ def construir_objetivo(ocfg: dict) -> Canal | Neurona:
     if tipo not in OBJETIVOS:
         raise ValueError(f"objetivo desconocido: '{tipo}'. "
                          f"Opciones: {', '.join(OBJETIVOS)}")
+    if tipo == "capa":
+        return Capa()
     z = int(ocfg["canal"])
     if tipo == "canal":
         return Canal(z)

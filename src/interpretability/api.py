@@ -2,6 +2,7 @@
 
     neuronas = listar_neuronas("foto.jpg")        # foto -> que neuronas se activan
     imagen   = generar_imagen(neuronas[:3])       # neuronas -> foto
+    sueno    = generar_deepdream("layer3")        # capa entera -> foto
 
 Todo lo demas (parametrizacion de Fourier, robustez, regularizacion) vive
 debajo con los valores de configs/feature_viz.yaml. Si no quieres tocarlo, no
@@ -23,7 +24,13 @@ from src.interpretability.feature_viz import (
     construir_modelo_congelado,
     maximizar_activacion,
 )
-from src.interpretability.objetivos import Canal, Neurona, Suma, resolver_modulo
+from src.interpretability.objetivos import (
+    Canal,
+    Capa,
+    Neurona,
+    Suma,
+    resolver_modulo,
+)
 
 RAIZ = Path(__file__).resolve().parents[2]
 CONFIG = RAIZ / "configs" / "feature_viz.yaml"
@@ -198,6 +205,33 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
     construir = Canal if tipo == "canal" else Neurona
     objetivo = Suma(tuple(construir(n.canal) for n in neuronas))
     imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo)
+    return imagen
+
+
+def generar_deepdream(capa: str, pasos: int | None = None,
+                      modelo: nn.Module | None = None,
+                      cfg: dict | None = None) -> torch.Tensor:
+    """La foto que mas excita una capa ENTERA, partiendo de ruido.
+
+    Es el objetivo Layer (DeepDream) del articulo. No se eligen neuronas, por
+    eso no pasa por generar_imagen(): se maximiza el cuadrado de todas las
+    unidades de la capa y sale lo que esa profundidad de la red tiende a ver.
+
+    Args:
+        capa: el modulo, p.ej. 'layer3' o 'layer3.1.conv2'.
+        pasos: pasos de optimizacion; por defecto los del YAML.
+        modelo: el modelo ya cargado.
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+
+    Returns:
+        Tensor (1, 3, H, W) en [0, 1], listo para save_image().
+    """
+    cfg = cargar_config(CONFIG) if cfg is None else dict(cfg)
+    cfg["objetivo"] = {"tipo": "capa", "capa": capa}
+    if pasos is not None:
+        cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
+
+    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=Capa())
     return imagen
 
 
