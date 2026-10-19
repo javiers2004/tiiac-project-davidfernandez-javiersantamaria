@@ -2,6 +2,7 @@
 
     neuronas = listar_neuronas("foto.jpg")        # foto -> que neuronas se activan
     imagen   = generar_imagen(neuronas[:3])       # neuronas -> foto
+    sueno    = generar_deepdream("layer3")        # capa entera -> foto
 
 Todo lo demas (parametrizacion de Fourier, robustez, regularizacion) vive
 debajo con los valores de configs/feature_viz.yaml. Si no quieres tocarlo, no
@@ -23,10 +24,23 @@ from src.interpretability.feature_viz import (
     construir_modelo_congelado,
     maximizar_activacion,
 )
-from src.interpretability.objetivos import Canal, Neurona, Suma, resolver_modulo
+from src.interpretability.objetivos import (
+    Canal,
+    Capa,
+    Logit,
+    Neurona,
+    Probabilidad,
+    Suma,
+    resolver_modulo,
+)
 
 RAIZ = Path(__file__).resolve().parents[2]
 CONFIG = RAIZ / "configs" / "feature_viz.yaml"
+
+# Los objetivos que se construyen a partir de una Activacion (capa + canal).
+# Layer no esta porque no elige unidad: va por generar_deepdream().
+POR_NEURONA = {"canal": Canal, "neurona": Neurona, "logit": Logit,
+               "probabilidad": Probabilidad}
 
 
 METADATOS = RAIZ / "data" / "metadata"
@@ -167,6 +181,13 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
             'neurona' usa solo la posicion central (Neuron). En las capas
             profundas apenas se distinguen, porque una sola posicion ya ve
             toda la imagen; en las tempranas la diferencia es enorme.
+            'logit' maximiza el logit de la clase (Class Logits); las
+            neuronas tienen que ser de 'fc', p.ej. las que devuelve
+            listar_neuronas(foto, capas='fc'), cuyo canal es la clase.
+            'probabilidad' maximiza la softmax de la clase (Class
+            Probability), con las mismas neuronas que 'logit'. Sirve para
+            comparar: tiende a hundir las demas clases en vez de dibujar
+            la propia.
         pasos: pasos de optimizacion; por defecto los del YAML.
         modelo: el modelo ya cargado.
         cfg: configuracion; por defecto configs/feature_viz.yaml.
@@ -187,17 +208,45 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
             f"han llegado de {sorted(capas)}. El bucle engancha una sola capa."
         )
 
-    if tipo not in ("canal", "neurona"):
-        raise ValueError(f"tipo desconocido: '{tipo}'. Opciones: canal, neurona")
+    if tipo not in POR_NEURONA:
+        raise ValueError(f"tipo desconocido: '{tipo}'. "
+                         f"Opciones: {', '.join(POR_NEURONA)}")
 
     cfg["objetivo"] = {"tipo": tipo, "capa": neuronas[0].capa,
                        "canal": neuronas[0].canal}
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    construir = Canal if tipo == "canal" else Neurona
+    construir = POR_NEURONA[tipo]
     objetivo = Suma(tuple(construir(n.canal) for n in neuronas))
     imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo)
+    return imagen
+
+
+def generar_deepdream(capa: str, pasos: int | None = None,
+                      modelo: nn.Module | None = None,
+                      cfg: dict | None = None) -> torch.Tensor:
+    """La foto que mas excita una capa ENTERA, partiendo de ruido.
+
+    Es el objetivo Layer (DeepDream) del articulo. No se eligen neuronas, por
+    eso no pasa por generar_imagen(): se maximiza el cuadrado de todas las
+    unidades de la capa y sale lo que esa profundidad de la red tiende a ver.
+
+    Args:
+        capa: el modulo, p.ej. 'layer3' o 'layer3.1.conv2'.
+        pasos: pasos de optimizacion; por defecto los del YAML.
+        modelo: el modelo ya cargado.
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+
+    Returns:
+        Tensor (1, 3, H, W) en [0, 1], listo para save_image().
+    """
+    cfg = cargar_config(CONFIG) if cfg is None else dict(cfg)
+    cfg["objetivo"] = {"tipo": "capa", "capa": capa}
+    if pasos is not None:
+        cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
+
+    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=Capa())
     return imagen
 
 

@@ -6,6 +6,9 @@ que esa neurona busca.
 
     python -m src.interpretability.feature_viz --neurona 0
     python -m src.interpretability.feature_viz --capa layer3.1.conv2 --neurona 42
+    python -m src.interpretability.feature_viz --tipo capa --capa layer3
+    python -m src.interpretability.feature_viz --tipo logit --capa fc --canal 7
+    python -m src.interpretability.feature_viz --tipo probabilidad --capa fc --canal 7
 
 Tres detalles sin los cuales esto NO funciona, y que son casi toda la calidad
 del resultado:
@@ -20,8 +23,10 @@ del resultado:
      rotacion aleatorios. Obliga a la imagen a activar la neurona desde
      cualquier encuadre, y eso elimina el ruido que solo funciona en una
      posicion exacta.
-  3. Se maximiza el LOGIT, no la softmax. Maximizar la probabilidad premia
-     hundir las otras 1080 clases, que es mas facil que representar la propia.
+  3. Para clases se maximiza el LOGIT, no la softmax. Maximizar la
+     probabilidad premia hundir las otras 1080 clases, que es mas facil que
+     representar la propia. El objetivo 'probabilidad' existe para replicar
+     esa comparacion del articulo, no para usarlo por defecto.
 
 Los pesos van congelados: el unico tensor con gradiente es la imagen.
 """
@@ -46,6 +51,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(RAIZ))
 
 from src.interpretability.objetivos import (        # noqa: E402
+    OBJETIVOS,
     construir_objetivo,
     inspeccionar_capa,
     resolver_modulo,
@@ -241,7 +247,9 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             modelo((entrada - media) / desv)
 
             # El objetivo decide la reduccion: Channel promedia el canal
-            # entero, Neuron toma una sola posicion. Ver objetivos.py.
+            # entero, Neuron toma una sola posicion, Layer promedia el
+            # cuadrado de la capa entera, Logit toma una clase de la salida
+            # y Probabilidad le pasa antes la softmax. Ver objetivos.py.
             activacion = objetivo(capturado["act"])
 
             perdida = -activacion
@@ -315,11 +323,16 @@ def nombre_salida(ocfg: dict) -> str:
     """Nombre de fichero que identifica el objetivo sin ambiguedad.
 
     Dos objetivos distintos sobre la misma capa y canal (Channel y Neuron) no
-    pueden acabar en el mismo PNG, o uno pisa al otro sin avisar.
+    pueden acabar en el mismo PNG, o uno pisa al otro sin avisar. Layer no
+    elige canal, asi que no lo lleva: si lo llevara, el mismo DeepDream
+    saldria con un nombre distinto segun lo que quedase en el YAML.
     """
     capa = str(ocfg["capa"]).replace(".", "_")
-    partes = [capa, str(ocfg.get("tipo", "canal")), str(ocfg["canal"])]
-    if ocfg.get("tipo") == "neurona":
+    tipo = str(ocfg.get("tipo", "canal"))
+    partes = [capa, tipo]
+    if tipo != "capa":
+        partes.append(str(ocfg["canal"]))
+    if tipo == "neurona":
         x, y = ocfg.get("x"), ocfg.get("y")
         partes.append("centro" if x is None and y is None else f"{x}x{y}")
     return "_".join(partes)
@@ -329,11 +342,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", type=Path, default=Path("configs/feature_viz.yaml"))
-    ap.add_argument("--tipo", choices=["canal", "neurona"], default=None,
-                    help="Channel (canal entero) o Neuron (una posicion)")
+    ap.add_argument("--tipo", choices=list(OBJETIVOS), default=None,
+                    help="Channel (canal entero), Neuron (una posicion), "
+                         "Layer (capa entera al cuadrado, DeepDream), "
+                         "Class Logits (logit de la clase, solo en fc) o "
+                         "Class Probability (softmax de la clase, solo en fc)")
     ap.add_argument("--capa", type=str, default=None,
                     help="modulo a maximizar, p.ej. 'fc' o 'layer3.1.conv2'")
-    ap.add_argument("--canal", type=int, default=None, help="indice z del canal")
+    ap.add_argument("--canal", type=int, default=None,
+                    help="indice z del canal, o la clase con --tipo logit "
+                         "o probabilidad")
     ap.add_argument("--x", type=int, default=None,
                     help="fila del mapa; por defecto el centro (solo con --tipo neurona)")
     ap.add_argument("--y", type=int, default=None,

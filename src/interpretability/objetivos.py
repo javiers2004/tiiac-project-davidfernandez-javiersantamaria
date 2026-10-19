@@ -5,10 +5,13 @@ Replica los objetivos del articulo de Olah et al., "Feature Visualization"
 
     Neuron    layer_n[x, y, z]     una posicion concreta de un canal
     Channel   layer_n[:, :, z]     el canal entero, promediado en el espacio
+    Layer     layer_n[:, :, :]^2   la capa entera al cuadrado (DeepDream)
+    Logit     pre_softmax[k]       la salida de la clase k antes de la softmax
+    Prob.     softmax[k]           la probabilidad de la clase k
 
-La unica diferencia entre los dos es la reduccion espacial. Todo lo demas
-(parametrizacion en Fourier, decorrelacion de color, robustez) es comun y vive
-en feature_viz.py.
+La unica diferencia entre ellos es la reduccion: que parte de la capa se toma
+y como se resume en un escalar. Todo lo demas (parametrizacion en Fourier,
+decorrelacion de color, robustez) es comun y vive en feature_viz.py.
 
 ORDEN DE EJES. El articulo y lucid trabajan en NHWC y escriben layer[x, y, z].
 PyTorch es NCHW. La traduccion es:
@@ -68,6 +71,8 @@ class Canal:
 
     En una capa sin extension espacial (la lineal de salida) se reduce al
     logit de la clase z, que es justo el objetivo Class Logits del articulo.
+    Da el mismo numero que Logit(z); Logit existe para nombrarlo y para
+    fallar si la capa no es la de salida.
     """
 
     z: int
@@ -112,7 +117,7 @@ class Neurona:
             raise ValueError(
                 f"el objetivo Neuron necesita una capa con extension espacial "
                 f"(N,C,H,W); esta da {tuple(act.shape)}. En la capa de salida "
-                f"usa el objetivo 'canal', que ahi es el logit de la clase."
+                f"usa el objetivo 'logit'."
             )
         _validar_canal(act, self.z)
         x, y = self.posicion(act.shape[2], act.shape[3])
@@ -122,6 +127,84 @@ class Neurona:
     def __str__(self) -> str:
         pos = "centro" if self.x is None and self.y is None else f"{self.x},{self.y}"
         return f"neurona[{self.z}] en {pos}"
+
+
+@dataclass(frozen=True)
+class Capa:
+    """Objetivo Layer (DeepDream): layer_n[:, :, :]^2.
+
+    Media del CUADRADO de toda la capa: todos los canales, todas las
+    posiciones. No elige unidad, asi que no lleva z: la imagen amplifica lo
+    que la capa ya "ve" en ella, sea lo que sea.
+
+    El cuadrado no es un detalle. Con la media a secas, repartir una misma
+    cantidad de activacion entre muchas unidades o concentrarla en unas pocas
+    da igual; con el cuadrado, concentrar paga mas. Por eso los DeepDream
+    acaban dominados por unos pocos patrones repetidos en vez de por un gris
+    que excite un poco a todo. Y en una capa pre-ReLU (una conv suelta) el
+    cuadrado cuenta tambien las activaciones negativas: empujar una unidad
+    hacia abajo puntua igual que hacia arriba.
+
+    Referencia: lucid.optvis.objectives.deepdream, que es reduce_mean(T**2).
+    """
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        return act.pow(2).mean()
+
+    def __str__(self) -> str:
+        return "capa^2"
+
+
+@dataclass(frozen=True)
+class Logit:
+    """Objetivo Class Logits: pre_softmax[k].
+
+    La salida de la clase k ANTES de la softmax, en la capa de salida ('fc').
+    Es lo que el articulo usa para visualizar clases: la imagen tiene que
+    parecerse a la clase, no solo dejar de parecerse a las demas (ver
+    Probabilidad).
+
+    Numericamente es Canal(k) sobre 'fc'. La diferencia es que este falla si
+    la capa no es la de salida: con Canal(k) sobre 'layer4' no hay error, se
+    optimiza el canal k de una conv y la imagen se etiqueta como una clase.
+    """
+
+    clase: int
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        _validar_salida(act, "Class Logits")
+        _validar_clase(act, self.clase)
+        return act[:, self.clase].mean()
+
+    def __str__(self) -> str:
+        return f"logit[{self.clase}]"
+
+
+@dataclass(frozen=True)
+class Probabilidad:
+    """Objetivo Class Probability: softmax[k].
+
+    La probabilidad de la clase k. Se aplica la softmax aqui, sobre los
+    logits que captura el hook de 'fc', porque el modelo no la tiene como
+    modulo propio.
+
+    Esta para replicar la comparacion del articulo, no como objetivo por
+    defecto. softmax[k] = exp(z_k) / sum_j exp(z_j): sube igual subiendo z_k
+    que hundiendo las otras 1080 clases, y lo segundo suele ser mas facil.
+    La imagen resultante tiende a ser "lo que no es ninguna otra clase" mas
+    que "lo que es la clase k". Ademas se satura: cuando la probabilidad se
+    acerca a 1 el gradiente se apaga, aunque el logit pueda seguir subiendo.
+    """
+
+    clase: int
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        _validar_salida(act, "Class Probability")
+        _validar_clase(act, self.clase)
+        return act.softmax(dim=-1)[:, self.clase].mean()
+
+    def __str__(self) -> str:
+        return f"softmax[{self.clase}]"
 
 
 @dataclass(frozen=True)
@@ -144,15 +227,19 @@ class Suma:
         return " + ".join(str(parte) for parte in self.partes)
 
 
-OBJETIVOS = {"canal": Canal, "neurona": Neurona}
+OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa,
+             "logit": Logit, "probabilidad": Probabilidad}
 
 
-def construir_objetivo(ocfg: dict) -> Canal | Neurona:
+def construir_objetivo(ocfg: dict
+                       ) -> Canal | Neurona | Capa | Logit | Probabilidad:
     """Crea el objetivo a partir de la subconfiguracion 'objetivo' del YAML.
 
     Args:
-        ocfg: dict con 'tipo' ('canal' o 'neurona'), 'canal' (el indice z) y,
-            solo para 'neurona', 'x' e 'y' opcionales.
+        ocfg: dict con 'tipo' ('canal', 'neurona', 'capa', 'logit' o
+            'probabilidad'), 'canal' (el indice z, que en 'logit' y
+            'probabilidad' es la clase y que 'capa' no usa) y, solo para
+            'neurona', 'x' e 'y' opcionales.
 
     Returns:
         El objetivo, invocable sobre el tensor de activacion de la capa.
@@ -161,9 +248,15 @@ def construir_objetivo(ocfg: dict) -> Canal | Neurona:
     if tipo not in OBJETIVOS:
         raise ValueError(f"objetivo desconocido: '{tipo}'. "
                          f"Opciones: {', '.join(OBJETIVOS)}")
+    if tipo == "capa":
+        return Capa()
     z = int(ocfg["canal"])
     if tipo == "canal":
         return Canal(z)
+    if tipo == "logit":
+        return Logit(z)
+    if tipo == "probabilidad":
+        return Probabilidad(z)
     x, y = ocfg.get("x"), ocfg.get("y")
     return Neurona(z, None if x is None else int(x), None if y is None else int(y))
 
@@ -245,3 +338,18 @@ def _validar_canal(act: torch.Tensor, z: int) -> None:
     if not 0 <= z < act.shape[1]:
         raise IndexError(f"la capa tiene {act.shape[1]} canales; "
                          f"el canal {z} no existe")
+
+
+def _validar_salida(act: torch.Tensor, nombre: str) -> None:
+    """Los objetivos de clase solo tienen sentido sobre la capa de salida."""
+    if act.dim() != 2:
+        raise ValueError(
+            f"el objetivo {nombre} necesita la capa de salida (N, clases); "
+            f"esta da {tuple(act.shape)}. Usa capa: fc."
+        )
+
+
+def _validar_clase(act: torch.Tensor, k: int) -> None:
+    if not 0 <= k < act.shape[1]:
+        raise IndexError(f"la salida tiene {act.shape[1]} clases; "
+                         f"la clase {k} no existe")

@@ -17,6 +17,13 @@ objetivo:
   # Los objetivos del articulo, seccion "Optimization Objectives":
   #   canal   -> Channel,  layer_n[:, :, z]   media del canal en el espacio
   #   neurona -> Neuron,   layer_n[x, y, z]   una sola posicion del canal
+  #   capa    -> Layer,    layer_n[:, :, :]^2 la capa entera al cuadrado
+  #                                           (DeepDream); ignora 'canal'
+  #   logit   -> Class Logits, pre_softmax[k] el logit de la clase k=canal;
+  #                                           solo con capa: fc
+  #   probabilidad -> Class Probability, softmax[k]; solo con capa: fc.
+  #                   Para comparar con 'logit', como en el articulo: sube
+  #                   tambien hundiendo las demas clases.
   tipo: canal
   capa: fc                # 'fc' = capa de salida. Tambien vale 'layer3.1.conv2'.
   canal: 0                # el indice z: la clase (0..1080) en fc, o el canal
