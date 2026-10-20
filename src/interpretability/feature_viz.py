@@ -232,21 +232,30 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
                                     generador=generador,
                                     lote=int(icfg.get("lote", 1))).to(dispositivo)
 
-    # El hook captura la salida de la capa elegida. Sirve igual para 'fc'
-    # (salida 2D, N x clases) que para una conv intermedia (4D, N x C x H x W).
+    rcfg, gcfg = cfg["robustez"], cfg["regularizacion"]
+    peso_tv, peso_l2 = float(gcfg["tv"]), float(gcfg["l2"])
+    acfg = gcfg.get("alineacion") or {}
+    peso_alin = float(acfg.get("peso", 0.0))
+    capa_alin = str(acfg["capa"]) if peso_alin else None
+    if peso_alin and parametrizacion.lote < 2:
+        print("aviso: la alineacion compara imagenes del lote entre si; con "
+              "imagen.lote=1 no hace nada")
+
+    # Los hooks capturan la salida de cada capa que hace falta: la del
+    # objetivo y, si hay alineacion, la de la alineacion (puede ser la misma).
+    # Sirven igual para 'fc' (2D, N x clases) que para una conv (4D).
     capturado: dict[str, torch.Tensor] = {}
-    modulo = resolver_modulo(modelo, capa)
-    asa = modulo.register_forward_hook(
-        lambda _m, _entrada, salida: capturado.__setitem__("act", salida)
-    )
+    asas = [
+        resolver_modulo(modelo, c).register_forward_hook(
+            lambda _m, _entrada, salida, c=c: capturado.__setitem__(c, salida))
+        for c in dict.fromkeys(filter(None, (capa, capa_alin)))
+    ]
 
     optimizador = torch.optim.Adam(parametrizacion.parameters(),
                                    lr=float(pcfg["learning_rate"]))
     ncfg = cfg["normalizacion"]
     media = torch.tensor(ncfg["media"], device=dispositivo).view(1, 3, 1, 1)
     desv = torch.tensor(ncfg["desviacion"], device=dispositivo).view(1, 3, 1, 1)
-    rcfg, gcfg = cfg["robustez"], cfg["regularizacion"]
-    peso_tv, peso_l2 = float(gcfg["tv"]), float(gcfg["l2"])
 
     pasos = int(pcfg["pasos"])
     historial: list[float] = []
@@ -262,34 +271,42 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             # y como se resume en un escalar. Channel promedia un canal,
             # Neuron toma una posicion, Direction proyecta sobre un vector...
             # La lista entera, en la cabecera de objetivos.py.
-            activacion = objetivo(capturado["act"])
-
-            perdida = -activacion
-            if peso_tv:
-                perdida = perdida + peso_tv * _variacion_total(imagen)
-            if peso_l2:
-                perdida = perdida + peso_l2 * imagen.pow(2).mean()
-
-            perdida.backward()
+            activacion = objetivo(capturado[capa])
 
             # Una unidad muerta (post-ReLU en cero) no da gradiente, y el
             # bucle devolveria el ruido inicial sin una sola queja. Mas de la
             # mitad de las posiciones centrales de layer4 estan asi al
-            # arrancar, asi que conviene detectarlo en el primer paso.
+            # arrancar, asi que conviene detectarlo en el primer paso. Se mira
+            # el gradiente del OBJETIVO solo: las penalizaciones tambien mueven
+            # la imagen y taparian una unidad muerta.
             if paso == 0:
-                _comprobar_gradiente(parametrizacion, objetivo, capa)
+                _comprobar_gradiente(parametrizacion, activacion, objetivo, capa)
+
+            perdida = -activacion
+            metricas = {"viz/activacion": activacion.item()}
+            if peso_tv:
+                perdida = perdida + peso_tv * _variacion_total(imagen)
+            if peso_l2:
+                perdida = perdida + peso_l2 * imagen.pow(2).mean()
+            if peso_alin:
+                penal = alineacion(capturado[capa_alin], float(acfg["decaimiento"]),
+                                   int(acfg["alcance"]))
+                perdida = perdida + peso_alin * penal
+                metricas["viz/alineacion"] = penal.item()
+
+            perdida.backward()
 
             optimizador.step()
 
             # .item() rompe el grafo: sin esto se acumula memoria.
-            valor = activacion.item()
+            valor = metricas["viz/activacion"]
             historial.append(valor)
-            registrar(run, {"viz/activacion": valor,
-                            "viz/perdida": perdida.item()}, paso)
+            registrar(run, {**metricas, "viz/perdida": perdida.item()}, paso)
             if paso % max(1, pasos // 10) == 0:
                 print(f"paso {paso:4d}/{pasos}  activacion={valor:+.4f}")
     finally:
-        asa.remove()
+        for asa in asas:
+            asa.remove()
 
     with torch.no_grad():
         final = parametrizacion().detach().cpu()
@@ -304,9 +321,11 @@ class UnidadMuerta(RuntimeError):
     """
 
 
-def _comprobar_gradiente(parametrizacion: nn.Module, objetivo, capa: str) -> None:
+def _comprobar_gradiente(parametrizacion: nn.Module, activacion: torch.Tensor,
+                         objetivo, capa: str) -> None:
     """Falla pronto si el objetivo no mueve la imagen."""
-    grad = parametrizacion.espectro.grad
+    grad, = torch.autograd.grad(activacion, parametrizacion.espectro,
+                                retain_graph=True, allow_unused=True)
     if grad is not None and torch.any(grad != 0):
         return
     raise UnidadMuerta(
@@ -316,6 +335,26 @@ def _comprobar_gradiente(parametrizacion: nn.Module, objetivo, capa: str) -> Non
         f"del bloque (p.ej. '{capa}.1.conv2' en lugar de '{capa}'), elegir "
         f"otro canal, o mover (x, y) a otra posicion."
     )
+
+
+def alineacion(act: torch.Tensor, decaimiento: float, alcance: int) -> torch.Tensor:
+    """Penaliza que imagenes vecinas del lote activen distinto una capa.
+
+    Es el "small alignment objective" de la interpolacion del articulo:
+    empuja a que la imagen i y la i+d se parezcan en una capa BAJA, para que
+    el mismo objeto se dibuje en el mismo sitio a lo largo de la fila. Las
+    parejas mas alejadas pesan menos: 1 / decaimiento**d, con d de 1 a alcance.
+
+    Devuelve una penalizacion (>= 0) que se SUMA a la perdida. lucid la
+    devuelve con el signo cambiado porque alli todo se maximiza.
+
+    Referencia: lucid.optvis.objectives.alignment.
+    """
+    total = act.new_zeros(())
+    for d in range(1, alcance + 1):
+        for i in range(act.shape[0] - d):
+            total = total + (act[i] - act[i + d]).pow(2).mean() / decaimiento ** d
+    return total
 
 
 def _variacion_total(x: torch.Tensor) -> torch.Tensor:

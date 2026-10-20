@@ -63,6 +63,15 @@ regularizacion:
   # y se suben solo si la imagen sale con ruido residual.
   tv: 0.0
   l2: 0.0
+  # Alineacion, de la interpolacion de "The Interaction between Neurons":
+  # penaliza que imagenes vecinas del lote activen distinto una capa BAJA,
+  # para que el mismo objeto quede en el mismo sitio a lo largo de la fila.
+  # Solo actua con imagen.lote > 1. peso 0 = desactivada.
+  alineacion:
+    peso: 0.0
+    capa: layer2
+    decaimiento: 2.0      # la pareja (i, i+d) pesa 1 / decaimiento**d (lucid: 2)
+    alcance: 4            # d va de 1 a alcance (lucid: 4)
 
 robustez:
   # Sin esto la optimizacion produce ruido adversarial en vez de patrones.

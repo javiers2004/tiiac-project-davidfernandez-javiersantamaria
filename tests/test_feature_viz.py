@@ -18,6 +18,7 @@ from torchvision.models import resnet18
 from src.interpretability.feature_viz import (
     ImagenFourier,
     UnidadMuerta,
+    alineacion,
     aplicar_robustez,
     maximizar_activacion,
     nombre_salida,
@@ -230,6 +231,68 @@ def test_una_unidad_muerta_se_detecta_en_el_primer_paso():
 
     with pytest.raises(UnidadMuerta, match="no propaga gradiente"):
         maximizar_activacion(cfg, modelo=modelo)
+
+
+# --- Alineacion -----------------------------------------------------------
+
+def test_la_alineacion_es_cero_si_el_lote_es_igual():
+    act = torch.randn(1, 4, 5, 5).repeat(3, 1, 1, 1)
+    assert alineacion(act, 2.0, 4).item() == 0.0
+
+
+def test_la_alineacion_de_dos_imagenes():
+    a, b = torch.zeros(1, 2, 3, 3), torch.ones(1, 2, 3, 3)
+    assert alineacion(torch.cat([a, b]), 2.0, 4).item() == pytest.approx(0.5)
+
+
+def test_las_parejas_lejanas_pesan_menos():
+    """Con tres imagenes 0, 0, 1: la pareja (1,2) pesa 1/2 y la (0,2), que
+    estan a distancia 2, pesa 1/4. Si el decaimiento no se aplicase, o se
+    aplicase al reves, el total seria otro."""
+    act = torch.tensor([0.0, 0.0, 1.0]).view(3, 1, 1, 1)
+    assert alineacion(act, 2.0, 4).item() == pytest.approx(0.5 + 0.25)
+    assert alineacion(act, 2.0, 1).item() == pytest.approx(0.5)
+
+
+def test_la_alineacion_acerca_las_imagenes_del_lote():
+    """El efecto que se busca: con alineacion fuerte, las imagenes de la fila
+    acaban mas parecidas entre si que sin ella."""
+    def separacion(peso):
+        cfg = copy.deepcopy(CFG)
+        cfg["imagen"]["lote"] = 3
+        cfg["optimizacion"]["pasos"] = 12
+        cfg["regularizacion"]["alineacion"] = {"peso": peso, "capa": "layer1",
+                                               "decaimiento": 2.0, "alcance": 4}
+        imagenes, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
+        return (imagenes[1:] - imagenes[:-1]).abs().mean().item()
+
+    assert separacion(1000.0) < separacion(0.0)
+
+
+def test_la_alineacion_no_tapa_una_unidad_muerta():
+    """La alineacion tambien mueve la imagen. Si la comprobacion mirase el
+    gradiente total, una unidad muerta pasaria desapercibida."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "canal", "capa": "layer4", "canal": 0}
+    cfg["imagen"]["lote"] = 2
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capa": "layer1",
+                                           "decaimiento": 2.0, "alcance": 4}
+    modelo = _modelo_congelado()
+    modelo.layer4.register_forward_hook(lambda _m, _e, s: s * 0)
+    with pytest.raises(UnidadMuerta):
+        maximizar_activacion(cfg, modelo=modelo)
+
+
+def test_los_hooks_se_quitan_al_terminar():
+    """Si quedase uno enganchado, la siguiente llamada con el mismo modelo
+    (la app lo reutiliza) capturaria de mas y gastaria memoria."""
+    cfg = copy.deepcopy(CFG)
+    cfg["imagen"]["lote"] = 2
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capa": "layer1",
+                                           "decaimiento": 2.0, "alcance": 4}
+    modelo = _modelo_congelado()
+    maximizar_activacion(cfg, modelo=modelo)
+    assert not modelo.fc._forward_hooks and not modelo.layer1._forward_hooks
 
 
 def test_el_nombre_del_fichero_distingue_los_dos_objetivos():
