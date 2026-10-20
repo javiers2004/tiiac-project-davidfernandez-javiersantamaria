@@ -80,13 +80,19 @@ class ImagenFourier(nn.Module):
     Fourier. Cada coeficiente se escala por 1/f**decay antes de la transformada
     inversa, asi que un paso de gradiente del mismo tamano mueve mucho mas las
     frecuencias bajas que las altas. Eso es lo que evita el ruido adversarial.
+
+    Con lote > 1 se optimizan varias imagenes a la vez, cada una con su propio
+    ruido de partida. Es lo que necesita la interpolacion entre neuronas, donde
+    cada imagen de la fila tiene un peso distinto.
     """
 
     def __init__(self, alto: int, ancho: int, decay: float = 1.0,
-                 sd: float = 0.01, generador: torch.Generator | None = None):
+                 sd: float = 0.01, generador: torch.Generator | None = None,
+                 lote: int = 1):
         super().__init__()
-        self.alto, self.ancho = alto, ancho
-        ruido = torch.randn(1, 3, alto, ancho // 2 + 1, 2, generator=generador)
+        self.alto, self.ancho, self.lote = alto, ancho, lote
+        # Con lote=1 el ruido es exactamente el de antes de admitir lotes.
+        ruido = torch.randn(lote, 3, alto, ancho // 2 + 1, 2, generator=generador)
         self.espectro = nn.Parameter(ruido * sd)
         self.register_buffer("escala", self._escala_frecuencias(alto, ancho, decay))
 
@@ -103,7 +109,7 @@ class ImagenFourier(nn.Module):
         return torch.tensor(escala, dtype=torch.float32)
 
     def forward(self) -> torch.Tensor:
-        """Reconstruye la imagen RGB en [0, 1] a partir del espectro."""
+        """Reconstruye las imagenes RGB (lote, 3, H, W) en [0, 1]."""
         espectro = torch.view_as_complex(self.espectro) * self.escala
         imagen = torch.fft.irfft2(espectro, s=(self.alto, self.ancho))
         imagen = imagen / 4.0  # constante empirica de Olah et al.
@@ -111,7 +117,7 @@ class ImagenFourier(nn.Module):
         # Decorrelacion de color: (B,3,H,W) -> (N,3) -> matmul -> vuelta.
         color = torch.as_tensor(_COLOR_NORM, device=imagen.device)
         plano = imagen.permute(0, 2, 3, 1).reshape(-1, 3) @ color.T
-        imagen = plano.view(1, self.alto, self.ancho, 3).permute(0, 3, 1, 2)
+        imagen = plano.view(self.lote, self.alto, self.ancho, 3).permute(0, 3, 1, 2)
 
         # La sigmoide mantiene la imagen en [0,1] sin matar el gradiente, que
         # es lo que haria un clamp en cuanto la imagen tocase los extremos.
@@ -123,7 +129,9 @@ def aplicar_robustez(imagen: torch.Tensor, rcfg: dict,
     """Aplica jitter, escala y rotacion aleatorios a la imagen.
 
     Args:
-        imagen: tensor (1, 3, H, W) en [0, 1].
+        imagen: tensor (N, 3, H, W) en [0, 1]. Todas las imagenes del lote
+            reciben la MISMA transformacion, como en lucid: asi las de una
+            interpolacion siguen alineadas entre si.
         rcfg: subconfiguracion 'robustez'.
         generador: generador propio, para no tocar el estado global de torch.
 
@@ -199,8 +207,9 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             Se inyecta desde los tests, que no tienen los .tar disponibles.
 
     Returns:
-        (imagen, historial) con la imagen final (1,3,H,W) en [0,1] y la
-        activacion alcanzada en cada paso.
+        (imagen, historial) con las imagenes finales (lote,3,H,W) en [0,1] y
+        la activacion alcanzada en cada paso. lote sale de imagen.lote en el
+        YAML y es 1 si no esta.
     """
     dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if modelo is None:
@@ -220,7 +229,8 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     tam = int(icfg["tamano"])
     parametrizacion = ImagenFourier(tam, tam, decay=float(icfg["decay_power"]),
                                     sd=float(icfg["sd_inicial"]),
-                                    generador=generador).to(dispositivo)
+                                    generador=generador,
+                                    lote=int(icfg.get("lote", 1))).to(dispositivo)
 
     # El hook captura la salida de la capa elegida. Sirve igual para 'fc'
     # (salida 2D, N x clases) que para una conv intermedia (4D, N x C x H x W).
@@ -395,7 +405,8 @@ def main() -> int:
     destino = RAIZ / cfg["salida"]["directorio"]
     destino.mkdir(parents=True, exist_ok=True)
     fichero = destino / (nombre_salida(cfg["objetivo"]) + ".png")
-    save_image(imagen, fichero)
+    # Un lote se guarda como UNA fila: es como se lee una interpolacion.
+    save_image(imagen, fichero, nrow=imagen.shape[0])
 
     print(f"\nactivacion inicial: {historial[0]:+.4f}")
     print(f"activacion final  : {historial[-1]:+.4f}")

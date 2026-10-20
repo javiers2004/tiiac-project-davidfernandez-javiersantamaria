@@ -63,6 +63,21 @@ def test_la_imagen_sale_en_el_rango_valido():
     assert imagen.min() >= 0.0 and imagen.max() <= 1.0
 
 
+def test_un_lote_da_varias_imagenes_distintas():
+    """Cada imagen del lote parte de su propio ruido. Si compartieran el
+    ruido, una interpolacion empezaria con todas iguales."""
+    imagenes = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0), lote=3)()
+    assert imagenes.shape == (3, 3, TAM, TAM)
+    assert not torch.allclose(imagenes[0], imagenes[1])
+
+
+def test_lote_uno_es_la_imagen_de_siempre():
+    """Admitir lotes no puede cambiar las visualizaciones que ya existian."""
+    a = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0))()
+    b = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0), lote=1)()
+    assert torch.equal(a, b)
+
+
 def test_la_robustez_conserva_el_tamano():
     """Las transformaciones recortan al tamano de partida. Si no, el modelo
     recibe una entrada de otro tamano y la comparacion entre pasos se rompe."""
@@ -85,6 +100,22 @@ def test_resolver_modulo_navega_las_rutas_con_indices():
     modelo = _modelo_congelado()
     assert resolver_modulo(modelo, "fc") is modelo.fc
     assert resolver_modulo(modelo, "layer3.1.conv2") is modelo.layer3[1].conv2
+
+
+def test_la_robustez_transforma_igual_todo_el_lote():
+    """Si cada imagen recibiera un encuadre distinto, las de una
+    interpolacion se desalinearian entre si."""
+    x = torch.rand(1, 3, TAM, TAM).repeat(2, 1, 1, 1)
+    salida = aplicar_robustez(x, CFG["robustez"], torch.Generator().manual_seed(0))
+    assert torch.equal(salida[0], salida[1])
+
+
+def test_el_bucle_devuelve_el_lote_entero():
+    cfg = copy.deepcopy(CFG)
+    cfg["imagen"]["lote"] = 3
+    imagenes, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
+    assert imagenes.shape == (3, 3, TAM, TAM)
+    assert len(historial) == CFG["optimizacion"]["pasos"]
 
 
 def test_los_pesos_no_se_mueven():
