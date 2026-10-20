@@ -4,6 +4,7 @@
     imagen   = generar_imagen(neuronas[:3])       # neuronas -> foto
     sueno    = generar_deepdream("layer3")        # capa entera -> foto
     otra     = generar_direccion("layer4", 3)     # direccion aleatoria -> foto
+    fila     = generar_interpolacion(neuronas[0], neuronas[1], imagenes=6)
 
 Todo lo demas (parametrizacion de Fourier, robustez, regularizacion) vive
 debajo con los valores de configs/feature_viz.yaml. Si no quieres tocarlo, no
@@ -29,6 +30,7 @@ from src.interpretability.objetivos import (
     Canal,
     Capa,
     Direccion,
+    Interpolacion,
     Logit,
     Neurona,
     Probabilidad,
@@ -281,6 +283,44 @@ def generar_direccion(capa: str, semilla: int, pasos: int | None = None,
     imagen, _ = maximizar_activacion(cfg, modelo=modelo,
                                      objetivo=Direccion(int(semilla)))
     return imagen
+
+
+def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
+                          pasos: int | None = None,
+                          modelo: nn.Module | None = None,
+                          cfg: dict | None = None) -> torch.Tensor:
+    """Una fila de fotos que va de una neurona a otra.
+
+    Es la interpolacion de "The Interaction between Neurons": la primera
+    imagen maximiza `desde`, la ultima `hasta` y las de en medio una mezcla
+    lineal. La alineacion y la parametrizacion compartida que la acompanan
+    se configuran en el YAML, como el resto.
+
+    Args:
+        desde: la neurona de partida, p.ej. una de listar_neuronas().
+        hasta: la de llegada. Tiene que ser de la misma capa.
+        imagenes: cuantas imagenes tiene la fila, 2 o mas.
+        pasos: pasos de optimizacion; por defecto los del YAML.
+        modelo: el modelo ya cargado.
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+
+    Returns:
+        Tensor (imagenes, 3, H, W) en [0, 1]. save_image(fila, f, nrow=imagenes)
+        lo guarda como una fila.
+    """
+    if desde.capa != hasta.capa:
+        raise ValueError(f"las dos neuronas tienen que ser de la misma capa; "
+                         f"han llegado de '{desde.capa}' y '{hasta.capa}'")
+    cfg = cargar_config(CONFIG) if cfg is None else dict(cfg)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": desde.capa,
+                       "canales": [desde.canal, hasta.canal]}
+    cfg["imagen"] = {**cfg["imagen"], "lote": int(imagenes)}
+    if pasos is not None:
+        cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
+
+    fila, _ = maximizar_activacion(
+        cfg, modelo=modelo, objetivo=Interpolacion(desde.canal, hasta.canal))
+    return fila
 
 
 def _preparar(imagen, cfg: dict) -> torch.Tensor:

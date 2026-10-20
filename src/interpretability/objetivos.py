@@ -15,6 +15,7 @@ Y de la seccion "The Interaction between Neurons":
                                      activaciones, promediada en el espacio
     Suma       A + B + ...           varios objetivos a la vez (aritmetica de
                                      neuronas, "jointly optimized")
+    Interp.    (1-w_i) A + w_i B     una fila de imagenes que va de A a B
 
 La unica diferencia entre ellos es la reduccion: que parte de la capa se toma
 y como se resume en un escalar. Todo lo demas (parametrizacion en Fourier,
@@ -279,11 +280,61 @@ class Suma:
         return " + ".join(str(parte) for parte in self.partes)
 
 
+@dataclass(frozen=True)
+class Interpolacion:
+    """Interpolacion entre dos canales de la misma capa, a lo largo del lote.
+
+    La imagen i de una fila de N maximiza (1 - w_i) * Canal(a) + w_i * Canal(b)
+    con w_i = i / (N - 1): la primera es solo a, la ultima solo b, y las de
+    en medio muestran como se combinan. Es la "linear interpolation between
+    the individual channel objectives" del articulo.
+
+    Necesita imagen.lote >= 2. Sola no basta para que la fila se vea como una
+    transicion: el articulo le anade la alineacion (feature_viz.alineacion) y
+    una parametrizacion compartida entre las imagenes.
+
+    Se promedia sobre el lote, como el resto de objetivos, en vez de sumar como
+    lucid: asi la activacion que se registra es comparable a la de Canal. Con
+    Adam la escala no cambia la optimizacion, pero si el peso relativo de las
+    penalizaciones; los pesos del YAML estan pensados para esta convencion.
+
+    Referencia: lucid.optvis.objectives.channel_interpolate.
+    """
+
+    a: int
+    b: int
+
+    @staticmethod
+    def pesos(n: int) -> torch.Tensor:
+        """w_i de cada imagen de una fila de n: de 0 (solo a) a 1 (solo b)."""
+        return torch.linspace(0.0, 1.0, n)
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        n = act.shape[0]
+        if n < 2:
+            raise ValueError(
+                f"la interpolacion necesita al menos 2 imagenes y el lote tiene "
+                f"{n}. Sube imagen.lote en el YAML (p.ej. --lote 6)."
+            )
+        _validar_canal(act, self.a)
+        _validar_canal(act, self.b)
+        w = self.pesos(n).to(act.device)
+        # Media espacial de cada canal, imagen a imagen: (N,).
+        a = act[:, self.a].reshape(n, -1).mean(dim=1)
+        b = act[:, self.b].reshape(n, -1).mean(dim=1)
+        return ((1 - w) * a + w * b).mean()
+
+    def __str__(self) -> str:
+        return f"interpolacion[{self.a} -> {self.b}]"
+
+
 OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa,
              "logit": Logit, "probabilidad": Probabilidad,
-             "direccion": Direccion, "suma": Suma}
+             "direccion": Direccion, "suma": Suma,
+             "interpolacion": Interpolacion}
 
-Objetivo = Canal | Neurona | Capa | Logit | Probabilidad | Direccion | Suma
+Objetivo = (Canal | Neurona | Capa | Logit | Probabilidad | Direccion | Suma
+            | Interpolacion)
 
 
 def construir_objetivo(ocfg: dict) -> Objetivo:
@@ -293,8 +344,9 @@ def construir_objetivo(ocfg: dict) -> Objetivo:
         ocfg: dict con 'tipo' (una clave de OBJETIVOS), 'canal' (el indice
             z, que en 'logit' y 'probabilidad' es la clase y que 'capa' y
             'direccion' no usan), 'direccion' (la semilla del vector, solo
-            para 'direccion'), 'canales' (la lista de canales, solo para
-            'suma') y, solo para 'neurona', 'x' e 'y' opcionales.
+            para 'direccion'), 'canales' (la lista de canales en 'suma';
+            el de partida y el de llegada en 'interpolacion') y, solo para
+            'neurona', 'x' e 'y' opcionales.
 
     Returns:
         El objetivo, invocable sobre el tensor de activacion de la capa.
@@ -309,6 +361,12 @@ def construir_objetivo(ocfg: dict) -> Objetivo:
         return Direccion(int(ocfg["direccion"]))
     if tipo == "suma":
         return Suma(tuple(Canal(int(z)) for z in ocfg["canales"]))
+    if tipo == "interpolacion":
+        canales = list(ocfg["canales"])
+        if len(canales) != 2:
+            raise ValueError(f"la interpolacion va de un canal a otro: 'canales' "
+                             f"tiene que tener 2 y tiene {len(canales)}")
+        return Interpolacion(int(canales[0]), int(canales[1]))
     z = int(ocfg["canal"])
     if tipo == "canal":
         return Canal(z)

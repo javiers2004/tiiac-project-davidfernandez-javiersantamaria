@@ -328,6 +328,34 @@ def test_el_nombre_de_la_suma_lleva_todos_los_canales():
         == "layer4_suma_12+40"
 
 
+def test_la_interpolacion_cambia_a_lo_largo_de_la_fila():
+    """La primera imagen tiene que activar A mas que la ultima, y la ultima B
+    mas que la primera: es lo que significa ir de una neurona a otra."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer3", "canales": [1, 2]}
+    cfg["imagen"]["lote"] = 3
+    cfg["optimizacion"]["pasos"] = 24
+    modelo = _modelo_congelado()
+    fila, _ = maximizar_activacion(cfg, modelo=modelo)
+
+    capturado = {}
+    modelo.layer3.register_forward_hook(lambda _m, _e, s: capturado.__setitem__("a", s))
+    ncfg = CFG["normalizacion"]
+    media = torch.tensor(ncfg["media"]).view(1, 3, 1, 1)
+    desv = torch.tensor(ncfg["desviacion"]).view(1, 3, 1, 1)
+    with torch.no_grad():
+        modelo((fila - media) / desv)
+    canal_a = capturado["a"][:, 1].mean(dim=(1, 2))
+    canal_b = capturado["a"][:, 2].mean(dim=(1, 2))
+    assert canal_a[0] > canal_a[-1]
+    assert canal_b[-1] > canal_b[0]
+
+
+def test_el_nombre_de_la_interpolacion_lleva_los_dos_extremos():
+    ocfg = {"tipo": "interpolacion", "capa": "layer4", "canales": [12, 40]}
+    assert nombre_salida(ocfg) == "layer4_interpolacion_12-40"
+
+
 def test_la_misma_seed_da_la_misma_imagen():
     """Sin esto, dos ejecuciones dan visualizaciones distintas y no se puede
     comparar una neurona consigo misma entre commits.

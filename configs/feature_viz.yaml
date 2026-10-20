@@ -29,6 +29,8 @@ objetivo:
   #                ignora 'canal' y usa 'direccion' como semilla de v
   #   suma      -> neuronas sumadas ("jointly optimized"): los Channel de
   #                'canales' a la vez; ignora 'canal'
+  #   interpolacion -> una fila de imagen.lote imagenes que va del canal
+  #                canales[0] al canales[1]; necesita lote >= 2
   tipo: canal
   capa: fc                # 'fc' = capa de salida. Tambien vale 'layer3.1.conv2'.
   canal: 0                # el indice z: la clase (0..1080) en fc, o el canal
@@ -38,7 +40,8 @@ objetivo:
   y: null
   # Solo para tipo 'direccion': cada semilla es una direccion distinta.
   direccion: 0
-  # Solo para tipo 'suma': los canales de 'capa' que se suman.
+  # Para tipo 'suma': los canales de 'capa' que se suman. Para
+  # 'interpolacion': el canal de partida y el de llegada.
   canales: [0, 1]
 
 imagen:
@@ -66,7 +69,8 @@ regularizacion:
   # Alineacion, de la interpolacion de "The Interaction between Neurons":
   # penaliza que imagenes vecinas del lote activen distinto una capa BAJA,
   # para que el mismo objeto quede en el mismo sitio a lo largo de la fila.
-  # Solo actua con imagen.lote > 1. peso 0 = desactivada.
+  # Solo actua con imagen.lote > 1: con una imagen ni se calcula.
+  # peso 0 = desactivada.
   alineacion:
     peso: 0.0
     capa: layer2

@@ -11,6 +11,7 @@ que esa neurona busca.
     python -m src.interpretability.feature_viz --tipo probabilidad --capa fc --canal 7
     python -m src.interpretability.feature_viz --tipo direccion --capa layer4.1.conv2 --direccion 3
     python -m src.interpretability.feature_viz --tipo suma --capa layer4 --canales 12 40
+    python -m src.interpretability.feature_viz --tipo interpolacion --capa layer4 --canales 12 40 --lote 6
 
 Tres detalles sin los cuales esto NO funciona, y que son casi toda la calidad
 del resultado:
@@ -236,10 +237,12 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     peso_tv, peso_l2 = float(gcfg["tv"]), float(gcfg["l2"])
     acfg = gcfg.get("alineacion") or {}
     peso_alin = float(acfg.get("peso", 0.0))
+    # La alineacion compara imagenes del lote entre si: con una sola seria
+    # cero, asi que ni se calcula. Por eso puede tener peso en el YAML sin
+    # afectar a los objetivos de una imagen.
+    if parametrizacion.lote < 2:
+        peso_alin = 0.0
     capa_alin = str(acfg["capa"]) if peso_alin else None
-    if peso_alin and parametrizacion.lote < 2:
-        print("aviso: la alineacion compara imagenes del lote entre si; con "
-              "imagen.lote=1 no hace nada")
 
     # Los hooks capturan la salida de cada capa que hace falta: la del
     # objetivo y, si hay alineacion, la de la alineacion (puede ser la misma).
@@ -386,6 +389,8 @@ def nombre_salida(ocfg: dict) -> str:
         partes.append(f"s{ocfg['direccion']}")
     elif tipo == "suma":
         partes.append("+".join(str(z) for z in ocfg["canales"]))
+    elif tipo == "interpolacion":
+        partes.append("-".join(str(z) for z in ocfg["canales"]))
     elif tipo != "capa":
         partes.append(str(ocfg["canal"]))
     if tipo == "neurona":
@@ -403,8 +408,9 @@ def main() -> int:
                          "Layer (capa entera al cuadrado, DeepDream), "
                          "Class Logits (logit de la clase, solo en fc), "
                          "Class Probability (softmax de la clase, solo en fc), "
-                         "Direction (vector aleatorio del espacio de activaciones) "
-                         "o suma de varios canales (--canales)")
+                         "Direction (vector aleatorio del espacio de activaciones), "
+                         "suma de varios canales (--canales) o interpolacion "
+                         "entre dos (--canales A B --lote N)")
     ap.add_argument("--capa", type=str, default=None,
                     help="modulo a maximizar, p.ej. 'fc' o 'layer3.1.conv2'")
     ap.add_argument("--canal", type=int, default=None,
@@ -417,7 +423,11 @@ def main() -> int:
     ap.add_argument("--direccion", type=int, default=None,
                     help="semilla del vector aleatorio (solo con --tipo direccion)")
     ap.add_argument("--canales", type=int, nargs="+", default=None,
-                    help="canales a sumar (solo con --tipo suma)")
+                    help="canales a sumar con --tipo suma, o de partida y de "
+                         "llegada con --tipo interpolacion")
+    ap.add_argument("--lote", type=int, default=None,
+                    help="imagenes que se optimizan a la vez; la interpolacion "
+                         "necesita 2 o mas")
     ap.add_argument("--pasos", type=int, default=None, help="pasos de optimizacion")
     args = ap.parse_args()
 
@@ -435,6 +445,8 @@ def main() -> int:
             cfg["objetivo"][clave] = valor
     if args.pasos is not None:
         cfg["optimizacion"]["pasos"] = args.pasos
+    if args.lote is not None:
+        cfg["imagen"]["lote"] = args.lote
 
     fijar_seed(int(cfg["experimento"]["seed"]))
     run = abrir_run(cfg)
