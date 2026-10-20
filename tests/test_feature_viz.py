@@ -79,6 +79,74 @@ def test_lote_uno_es_la_imagen_de_siempre():
     assert torch.equal(a, b)
 
 
+RECETA = [[1, 2], [1, 4], [2, 8]]
+
+
+def test_la_parte_compartida_de_un_fotograma_es_igual_en_toda_la_fila():
+    imagen = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0),
+                           lote=4, compartida=[[1, 4]])
+    with torch.no_grad():
+        imagen.espectro.zero_()
+        imagen.compartida[0].normal_(generator=torch.Generator().manual_seed(1))
+        fila = imagen()
+    for i in range(1, 4):
+        assert torch.allclose(fila[0], fila[i])
+
+
+def test_la_parte_compartida_de_dos_fotogramas_cambia_a_lo_largo_de_la_fila():
+    """Con dos fotogramas clave, las imagenes de en medio estan entre las de
+    los extremos: la vecina se parece mas que la del otro extremo."""
+    imagen = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0),
+                           lote=5, compartida=[[2, 4]])
+    with torch.no_grad():
+        imagen.espectro.zero_()
+        imagen.compartida[0].normal_(generator=torch.Generator().manual_seed(1))
+        fila = imagen()
+    cerca = (fila[0] - fila[1]).abs().mean()
+    lejos = (fila[0] - fila[4]).abs().mean()
+    assert cerca < lejos
+
+
+def test_la_parte_compartida_no_cambia_las_imagenes_sueltas():
+    """Es una pieza de la interpolacion: con lote=1 ni se crea, asi que todas
+    las visualizaciones de una imagen siguen saliendo igual que antes."""
+    a = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0))()
+    b = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0),
+                      compartida=RECETA)()
+    assert torch.equal(a, b)
+
+
+def test_la_parte_compartida_no_altera_el_ruido_propio():
+    """Se crea despues del espectro: el ruido de cada imagen es el mismo con
+    y sin parte compartida."""
+    a = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0), lote=3)
+    b = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0), lote=3,
+                      compartida=RECETA)
+    assert torch.equal(a.espectro, b.espectro)
+
+
+def test_la_parte_compartida_recibe_gradiente():
+    """Si no lo recibiera, se quedaria en el ruido inicial y la fila no
+    compartiria nada."""
+    imagen = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0),
+                           lote=3, compartida=RECETA)
+    imagen()[:, 0].mean().backward()
+    assert len(imagen.compartida) == len(RECETA)
+    assert all(torch.any(baja.grad != 0) for baja in imagen.compartida)
+
+
+def test_el_bucle_usa_la_parte_compartida():
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer3", "canales": [1, 2]}
+    cfg["imagen"]["lote"] = 3
+    cfg["imagen"]["compartida"] = RECETA
+    con, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
+    cfg["imagen"]["compartida"] = []
+    sin, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
+    assert con.shape == (3, 3, TAM, TAM)
+    assert not torch.allclose(con, sin)
+
+
 def test_la_robustez_conserva_el_tamano():
     """Las transformaciones recortan al tamano de partida. Si no, el modelo
     recibe una entrada de otro tamano y la comparacion entre pasos se rompe."""

@@ -85,17 +85,38 @@ class ImagenFourier(nn.Module):
     Con lote > 1 se optimizan varias imagenes a la vez, cada una con su propio
     ruido de partida. Es lo que necesita la interpolacion entre neuronas, donde
     cada imagen de la fila tiene un peso distinto.
+
+    `compartida` anade la parte COMPARTIDA de la interpolacion del articulo
+    ("a combination of separate and shared image parameterizations"): tensores
+    de baja resolucion comunes a todo el lote que se suman a la parte propia
+    de cada imagen. Cada uno es (imagenes, divisor): un tensor de
+    alto/divisor x ancho/divisor con `imagenes` fotogramas clave, reescalado
+    al tamano real y, a lo largo del lote, interpolado entre fotogramas. Con
+    imagenes=1 es identico en toda la fila; con 2 va cambiando suavemente de
+    un extremo al otro. Facilita que los objetos queden en el mismo sitio sin
+    impedir que cada imagen sea distinta. Solo se usa con lote > 1.
+
+    Referencia: lucid.optvis.param.lowres_tensor y el interpolate_param_f del
+    notebook neuron_interaction.ipynb de lucid.
     """
 
     def __init__(self, alto: int, ancho: int, decay: float = 1.0,
                  sd: float = 0.01, generador: torch.Generator | None = None,
-                 lote: int = 1):
+                 lote: int = 1, compartida: list | None = None):
         super().__init__()
         self.alto, self.ancho, self.lote = alto, ancho, lote
         # Con lote=1 el ruido es exactamente el de antes de admitir lotes.
         ruido = torch.randn(lote, 3, alto, ancho // 2 + 1, 2, generator=generador)
         self.espectro = nn.Parameter(ruido * sd)
         self.register_buffer("escala", self._escala_frecuencias(alto, ancho, decay))
+
+        # Se crea DESPUES del espectro para no alterar su ruido inicial.
+        compartida = compartida if lote > 1 else []
+        self.compartida = nn.ParameterList(
+            nn.Parameter(sd * torch.randn(1, 3, int(n), alto // int(div),
+                                          ancho // int(div), generator=generador))
+            for n, div in (compartida or [])
+        )
 
     @staticmethod
     def _escala_frecuencias(alto: int, ancho: int, decay: float) -> torch.Tensor:
@@ -114,6 +135,11 @@ class ImagenFourier(nn.Module):
         espectro = torch.view_as_complex(self.espectro) * self.escala
         imagen = torch.fft.irfft2(espectro, s=(self.alto, self.ancho))
         imagen = imagen / 4.0  # constante empirica de Olah et al.
+        for baja in self.compartida:
+            # (1, 3, fotogramas, h, w) -> (1, 3, lote, H, W) -> (lote, 3, H, W)
+            subida = F.interpolate(baja, size=(self.lote, self.alto, self.ancho),
+                                   mode="trilinear", align_corners=False)
+            imagen = imagen + subida[0].permute(1, 0, 2, 3)
 
         # Decorrelacion de color: (B,3,H,W) -> (N,3) -> matmul -> vuelta.
         color = torch.as_tensor(_COLOR_NORM, device=imagen.device)
@@ -231,7 +257,8 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     parametrizacion = ImagenFourier(tam, tam, decay=float(icfg["decay_power"]),
                                     sd=float(icfg["sd_inicial"]),
                                     generador=generador,
-                                    lote=int(icfg.get("lote", 1))).to(dispositivo)
+                                    lote=int(icfg.get("lote", 1)),
+                                    compartida=icfg.get("compartida")).to(dispositivo)
 
     rcfg, gcfg = cfg["robustez"], cfg["regularizacion"]
     peso_tv, peso_l2 = float(gcfg["tv"]), float(gcfg["l2"])

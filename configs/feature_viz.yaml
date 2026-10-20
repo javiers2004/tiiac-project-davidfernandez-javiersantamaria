@@ -49,6 +49,13 @@ imagen:
   # Cuantas imagenes se optimizan a la vez. 1 para todos los objetivos salvo
   # la interpolacion, que reparte sus pesos a lo largo del lote.
   lote: 1
+  # Parte compartida de la interpolacion: tensores de baja resolucion comunes a
+  # todo el lote, que ayudan a que los objetos queden alineados en la fila.
+  # Cada entrada es [fotogramas, divisor]: un tensor de tamano/divisor con
+  # esos fotogramas clave, interpolados a lo largo del lote. Solo se usa con
+  # lote > 1. [] la desactiva. Es la receta del notebook de lucid
+  # (neuron_interaction.ipynb, interpolate_param_f):
+  compartida: [[1, 2], [1, 4], [1, 8], [2, 8], [1, 16], [2, 16]]
   # Atenuacion de las altas frecuencias. Subirlo da imagenes mas suaves y
   # bajarlo, mas detalle y mas ruido. 1.0 es el valor de Olah et al.
   decay_power: 1.0
