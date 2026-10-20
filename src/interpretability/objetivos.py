@@ -9,6 +9,11 @@ Replica los objetivos del articulo de Olah et al., "Feature Visualization"
     Logit     pre_softmax[k]       la salida de la clase k antes de la softmax
     Prob.     softmax[k]           la probabilidad de la clase k
 
+Y de la seccion "The Interaction between Neurons":
+
+    Direction  v . layer_n[x, y, :]  una direccion cualquiera del espacio de
+                                     activaciones, promediada en el espacio
+
 La unica diferencia entre ellos es la reduccion: que parte de la capa se toma
 y como se resume en un escalar. Todo lo demas (parametrizacion en Fourier,
 decorrelacion de color, robustez) es comun y vive en feature_viz.py.
@@ -208,6 +213,46 @@ class Probabilidad:
 
 
 @dataclass(frozen=True)
+class Direccion:
+    """Objetivo Direction: v . layer_n[x, y, :], promediado en el espacio.
+
+    El articulo llama espacio de activaciones al de todas las combinaciones de
+    canales de una capa. Cada canal es un eje; una combinacion de canales es
+    un vector v cualquiera de ese espacio. En cada posicion se hace el
+    producto escalar del vector de canales con v, y se promedia. Si v fuese el
+    eje z (todo ceros salvo un 1 en z) esto seria exactamente Canal(z).
+
+    v es aleatorio: normal y de norma 1. Se guarda la semilla y no el vector,
+    asi el objetivo sigue siendo comparable y serializable como los demas, y
+    no necesita saber cuantos canales tiene la capa hasta que se aplica.
+
+    Ojo en capas post-ReLU (las salidas de bloque): los canales no bajan de
+    cero, asi que los pesos negativos de v solo pueden pedir que ese canal se
+    calle. En una conv pre-ReLU si pueden empujarlo por debajo de cero.
+
+    Referencia: lucid.optvis.objectives.direction con cossim_pow=0.
+    """
+
+    semilla: int
+
+    def vector(self, canales: int) -> torch.Tensor:
+        """La direccion v para una capa de `canales` canales, de norma 1."""
+        # Generador propio: no toca el estado global, que fija seed.py.
+        generador = torch.Generator().manual_seed(self.semilla)
+        v = torch.randn(canales, generator=generador)
+        return v / v.norm()
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        v = self.vector(act.shape[1]).to(act.device)
+        # (C,) -> (1, C, 1, 1) en una conv y (1, C) en la lineal de salida.
+        v = v.view(1, -1, *([1] * (act.dim() - 2)))
+        return (act * v).sum(dim=1).mean()
+
+    def __str__(self) -> str:
+        return f"direccion[semilla {self.semilla}]"
+
+
+@dataclass(frozen=True)
 class Suma:
     """Varios objetivos maximizados a la vez.
 
@@ -228,18 +273,20 @@ class Suma:
 
 
 OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa,
-             "logit": Logit, "probabilidad": Probabilidad}
+             "logit": Logit, "probabilidad": Probabilidad,
+             "direccion": Direccion}
+
+Objetivo = Canal | Neurona | Capa | Logit | Probabilidad | Direccion | Suma
 
 
-def construir_objetivo(ocfg: dict
-                       ) -> Canal | Neurona | Capa | Logit | Probabilidad:
+def construir_objetivo(ocfg: dict) -> Objetivo:
     """Crea el objetivo a partir de la subconfiguracion 'objetivo' del YAML.
 
     Args:
-        ocfg: dict con 'tipo' ('canal', 'neurona', 'capa', 'logit' o
-            'probabilidad'), 'canal' (el indice z, que en 'logit' y
-            'probabilidad' es la clase y que 'capa' no usa) y, solo para
-            'neurona', 'x' e 'y' opcionales.
+        ocfg: dict con 'tipo' (una clave de OBJETIVOS), 'canal' (el indice
+            z, que en 'logit' y 'probabilidad' es la clase y que 'capa' y
+            'direccion' no usan), 'direccion' (la semilla del vector, solo
+            para 'direccion') y, solo para 'neurona', 'x' e 'y' opcionales.
 
     Returns:
         El objetivo, invocable sobre el tensor de activacion de la capa.
@@ -250,6 +297,8 @@ def construir_objetivo(ocfg: dict
                          f"Opciones: {', '.join(OBJETIVOS)}")
     if tipo == "capa":
         return Capa()
+    if tipo == "direccion":
+        return Direccion(int(ocfg["direccion"]))
     z = int(ocfg["canal"])
     if tipo == "canal":
         return Canal(z)

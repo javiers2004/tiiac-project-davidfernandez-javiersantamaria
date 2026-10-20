@@ -9,6 +9,7 @@ que esa neurona busca.
     python -m src.interpretability.feature_viz --tipo capa --capa layer3
     python -m src.interpretability.feature_viz --tipo logit --capa fc --canal 7
     python -m src.interpretability.feature_viz --tipo probabilidad --capa fc --canal 7
+    python -m src.interpretability.feature_viz --tipo direccion --capa layer4.1.conv2 --direccion 3
 
 Tres detalles sin los cuales esto NO funciona, y que son casi toda la calidad
 del resultado:
@@ -246,10 +247,10 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             entrada = aplicar_robustez(imagen, rcfg, generador)
             modelo((entrada - media) / desv)
 
-            # El objetivo decide la reduccion: Channel promedia el canal
-            # entero, Neuron toma una sola posicion, Layer promedia el
-            # cuadrado de la capa entera, Logit toma una clase de la salida
-            # y Probabilidad le pasa antes la softmax. Ver objetivos.py.
+            # El objetivo decide la reduccion: que parte de la capa se toma
+            # y como se resume en un escalar. Channel promedia un canal,
+            # Neuron toma una posicion, Direction proyecta sobre un vector...
+            # La lista entera, en la cabecera de objetivos.py.
             activacion = objetivo(capturado["act"])
 
             perdida = -activacion
@@ -325,12 +326,15 @@ def nombre_salida(ocfg: dict) -> str:
     Dos objetivos distintos sobre la misma capa y canal (Channel y Neuron) no
     pueden acabar en el mismo PNG, o uno pisa al otro sin avisar. Layer no
     elige canal, asi que no lo lleva: si lo llevara, el mismo DeepDream
-    saldria con un nombre distinto segun lo que quedase en el YAML.
+    saldria con un nombre distinto segun lo que quedase en el YAML. Direction
+    tampoco elige canal: lo que la identifica es la semilla de su vector.
     """
     capa = str(ocfg["capa"]).replace(".", "_")
     tipo = str(ocfg.get("tipo", "canal"))
     partes = [capa, tipo]
-    if tipo != "capa":
+    if tipo == "direccion":
+        partes.append(f"s{ocfg['direccion']}")
+    elif tipo != "capa":
         partes.append(str(ocfg["canal"]))
     if tipo == "neurona":
         x, y = ocfg.get("x"), ocfg.get("y")
@@ -345,8 +349,9 @@ def main() -> int:
     ap.add_argument("--tipo", choices=list(OBJETIVOS), default=None,
                     help="Channel (canal entero), Neuron (una posicion), "
                          "Layer (capa entera al cuadrado, DeepDream), "
-                         "Class Logits (logit de la clase, solo en fc) o "
-                         "Class Probability (softmax de la clase, solo en fc)")
+                         "Class Logits (logit de la clase, solo en fc), "
+                         "Class Probability (softmax de la clase, solo en fc) o "
+                         "Direction (vector aleatorio del espacio de activaciones)")
     ap.add_argument("--capa", type=str, default=None,
                     help="modulo a maximizar, p.ej. 'fc' o 'layer3.1.conv2'")
     ap.add_argument("--canal", type=int, default=None,
@@ -356,6 +361,8 @@ def main() -> int:
                     help="fila del mapa; por defecto el centro (solo con --tipo neurona)")
     ap.add_argument("--y", type=int, default=None,
                     help="columna del mapa; por defecto el centro")
+    ap.add_argument("--direccion", type=int, default=None,
+                    help="semilla del vector aleatorio (solo con --tipo direccion)")
     ap.add_argument("--pasos", type=int, default=None, help="pasos de optimizacion")
     args = ap.parse_args()
 
@@ -367,7 +374,8 @@ def main() -> int:
 
     # Solo se sobreescribe lo que se pide por CLI; el resto lo manda el YAML.
     for clave, valor in (("tipo", args.tipo), ("capa", args.capa),
-                         ("canal", args.canal), ("x", args.x), ("y", args.y)):
+                         ("canal", args.canal), ("x", args.x), ("y", args.y),
+                         ("direccion", args.direccion)):
         if valor is not None:
             cfg["objetivo"][clave] = valor
     if args.pasos is not None:

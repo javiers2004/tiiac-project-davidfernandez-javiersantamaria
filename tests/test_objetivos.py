@@ -1,5 +1,5 @@
-"""Tests de los objetivos del articulo: Neuron, Channel, Layer, Class Logits y
-Class Probability.
+"""Tests de los objetivos del articulo: Neuron, Channel, Layer, Class Logits,
+Class Probability y, de "The Interaction between Neurons", Direction.
 
 Casi todo lo que puede salir mal aqui sale mal EN SILENCIO: un eje cambiado o
 un centro mal redondeado no dan error, dan otra neurona y una imagen que
@@ -14,6 +14,7 @@ from torchvision.models import resnet18
 from src.interpretability.objetivos import (
     Canal,
     Capa,
+    Direccion,
     FormaCapa,
     Logit,
     Neurona,
@@ -171,6 +172,46 @@ def test_probabilidad_fuera_de_la_salida_falla():
         Probabilidad(0)(torch.randn(1, 512, 7, 7))
 
 
+# --- Direction: v . layer_n[x, y, :] ------------------------------------
+
+def test_direccion_es_una_combinacion_de_canales():
+    """Lo que el articulo dice del espacio de activaciones, en un test: una
+    direccion es la suma de los canales pesados por v. Si el producto escalar
+    se hiciese sobre el eje equivocado no daria error, daria otro numero."""
+    act = torch.randn(1, 6, 4, 5)
+    d = Direccion(3)
+    v = d.vector(6)
+    combinacion = sum(v[c] * Canal(c)(act) for c in range(6))
+    assert torch.allclose(d(act), combinacion, atol=1e-6)
+
+
+def test_la_direccion_tiene_norma_uno():
+    assert Direccion(0).vector(512).norm().item() == pytest.approx(1.0)
+
+
+def test_la_misma_semilla_es_la_misma_direccion():
+    """Si no, la direccion que se visualiza no es la que se ha guardado."""
+    assert torch.equal(Direccion(7).vector(64), Direccion(7).vector(64))
+    assert not torch.allclose(Direccion(7).vector(64), Direccion(8).vector(64))
+
+
+def test_la_direccion_no_toca_el_estado_global_de_torch():
+    """Las semillas globales las fija seed.py; un objetivo no puede moverlas."""
+    act = torch.randn(1, 8, 3, 3)
+    torch.manual_seed(0)
+    esperado = torch.rand(1)
+    torch.manual_seed(0)
+    Direccion(5)(act)
+    assert torch.equal(torch.rand(1), esperado)
+
+
+def test_direccion_funciona_tambien_en_la_salida():
+    """En fc es una combinacion de logits."""
+    act = torch.randn(1, 10)
+    v = Direccion(1).vector(10)
+    assert torch.allclose(Direccion(1)(act), (act[0] * v).sum())
+
+
 # --- Rangos ---------------------------------------------------------------
 
 def test_un_canal_inexistente_falla():
@@ -195,6 +236,10 @@ def test_construir_objetivo_lee_el_tipo():
 def test_capa_no_necesita_canal():
     """Layer no elige unidad: el YAML no tiene por que traer 'canal'."""
     assert construir_objetivo({"tipo": "capa"}) == Capa()
+
+
+def test_direccion_lee_su_semilla():
+    assert construir_objetivo({"tipo": "direccion", "direccion": 4}) == Direccion(4)
 
 
 def test_logit_lee_la_clase_de_canal():

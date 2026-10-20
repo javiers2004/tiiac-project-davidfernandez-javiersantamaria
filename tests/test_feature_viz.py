@@ -129,6 +129,17 @@ def test_deepdream_sube_la_energia_de_la_capa():
     assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
 
 
+def test_la_direccion_sube():
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "direccion", "capa": "layer3.1.conv2", "direccion": 0}
+    cfg["optimizacion"]["pasos"] = 12
+    _, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+    primeros = sum(historial[:4]) / 4
+    ultimos = sum(historial[-4:]) / 4
+    assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
+
+
 def test_el_logit_de_la_clase_sube():
     cfg = copy.deepcopy(CFG)
     cfg["objetivo"] = {"tipo": "logit", "capa": "fc", "canal": 3}
@@ -205,6 +216,16 @@ def test_el_nombre_del_deepdream_no_depende_del_canal():
     a = nombre_salida({"tipo": "capa", "capa": "layer3", "canal": 0})
     b = nombre_salida({"tipo": "capa", "capa": "layer3", "canal": 42})
     assert a == b == "layer3_capa"
+
+
+def test_el_nombre_de_la_direccion_es_su_semilla():
+    """Dos direcciones distintas no pueden pisarse el PNG, y el canal que
+    quede en el YAML no puede cambiar el nombre de la misma direccion."""
+    a = nombre_salida({"tipo": "direccion", "capa": "layer4", "direccion": 1, "canal": 0})
+    b = nombre_salida({"tipo": "direccion", "capa": "layer4", "direccion": 1, "canal": 9})
+    c = nombre_salida({"tipo": "direccion", "capa": "layer4", "direccion": 2, "canal": 0})
+    assert a == b == "layer4_direccion_s1"
+    assert a != c
 
 
 def test_la_misma_seed_da_la_misma_imagen():

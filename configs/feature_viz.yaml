@@ -24,6 +24,9 @@ objetivo:
   #   probabilidad -> Class Probability, softmax[k]; solo con capa: fc.
   #                   Para comparar con 'logit', como en el articulo: sube
   #                   tambien hundiendo las demas clases.
+  # De la seccion "The Interaction between Neurons":
+  #   direccion -> Direction, v . layer_n[x, y, :] con v aleatorio de norma 1;
+  #                ignora 'canal' y usa 'direccion' como semilla de v
   tipo: canal
   capa: fc                # 'fc' = capa de salida. Tambien vale 'layer3.1.conv2'.
   canal: 0                # el indice z: la clase (0..1080) en fc, o el canal
@@ -31,6 +34,8 @@ objetivo:
   # OJO: x es la FILA e y la COLUMNA. Ver la cabecera de objetivos.py.
   x: null
   y: null
+  # Solo para tipo 'direccion': cada semilla es una direccion distinta.
+  direccion: 0
 
 imagen:
   tamano: 224

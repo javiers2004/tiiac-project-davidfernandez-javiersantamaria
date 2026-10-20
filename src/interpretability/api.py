@@ -3,6 +3,7 @@
     neuronas = listar_neuronas("foto.jpg")        # foto -> que neuronas se activan
     imagen   = generar_imagen(neuronas[:3])       # neuronas -> foto
     sueno    = generar_deepdream("layer3")        # capa entera -> foto
+    otra     = generar_direccion("layer4", 3)     # direccion aleatoria -> foto
 
 Todo lo demas (parametrizacion de Fourier, robustez, regularizacion) vive
 debajo con los valores de configs/feature_viz.yaml. Si no quieres tocarlo, no
@@ -27,6 +28,7 @@ from src.interpretability.feature_viz import (
 from src.interpretability.objetivos import (
     Canal,
     Capa,
+    Direccion,
     Logit,
     Neurona,
     Probabilidad,
@@ -247,6 +249,37 @@ def generar_deepdream(capa: str, pasos: int | None = None,
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
     imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=Capa())
+    return imagen
+
+
+def generar_direccion(capa: str, semilla: int, pasos: int | None = None,
+                      modelo: nn.Module | None = None,
+                      cfg: dict | None = None) -> torch.Tensor:
+    """La foto que mas empuja la capa en una direccion ALEATORIA.
+
+    Es el objetivo Direction de "The Interaction between Neurons": en vez de
+    un canal (un eje del espacio de activaciones) se maximiza una combinacion
+    aleatoria de todos. Cada semilla es una direccion distinta y siempre la
+    misma. Segun el articulo, a menudo son interpretables, pero menos veces
+    que las neuronas sueltas.
+
+    Args:
+        capa: el modulo, p.ej. 'layer4.1.conv2'.
+        semilla: identifica la direccion.
+        pasos: pasos de optimizacion; por defecto los del YAML.
+        modelo: el modelo ya cargado.
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+
+    Returns:
+        Tensor (1, 3, H, W) en [0, 1], listo para save_image().
+    """
+    cfg = cargar_config(CONFIG) if cfg is None else dict(cfg)
+    cfg["objetivo"] = {"tipo": "direccion", "capa": capa, "direccion": int(semilla)}
+    if pasos is not None:
+        cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
+
+    imagen, _ = maximizar_activacion(cfg, modelo=modelo,
+                                     objetivo=Direccion(int(semilla)))
     return imagen
 
 
