@@ -1,5 +1,6 @@
-"""Tests de los objetivos del articulo: Neuron, Channel, Layer, Class Logits y
-Class Probability.
+"""Tests de los objetivos del articulo: Neuron, Channel, Layer, Class Logits,
+Class Probability y, de "The Interaction between Neurons", Direction e
+Interpolation.
 
 Casi todo lo que puede salir mal aqui sale mal EN SILENCIO: un eje cambiado o
 un centro mal redondeado no dan error, dan otra neurona y una imagen que
@@ -14,10 +15,13 @@ from torchvision.models import resnet18
 from src.interpretability.objetivos import (
     Canal,
     Capa,
+    Direccion,
     FormaCapa,
+    Interpolacion,
     Logit,
     Neurona,
     Probabilidad,
+    Suma,
     construir_objetivo,
     inspeccionar_capa,
     resolver_modulo,
@@ -171,6 +175,89 @@ def test_probabilidad_fuera_de_la_salida_falla():
         Probabilidad(0)(torch.randn(1, 512, 7, 7))
 
 
+# --- Direction: v . layer_n[x, y, :] ------------------------------------
+
+def test_direccion_es_una_combinacion_de_canales():
+    """Lo que el articulo dice del espacio de activaciones, en un test: una
+    direccion es la suma de los canales pesados por v. Si el producto escalar
+    se hiciese sobre el eje equivocado no daria error, daria otro numero."""
+    act = torch.randn(1, 6, 4, 5)
+    d = Direccion(3)
+    v = d.vector(6)
+    combinacion = sum(v[c] * Canal(c)(act) for c in range(6))
+    assert torch.allclose(d(act), combinacion, atol=1e-6)
+
+
+def test_la_direccion_tiene_norma_uno():
+    assert Direccion(0).vector(512).norm().item() == pytest.approx(1.0)
+
+
+def test_la_misma_semilla_es_la_misma_direccion():
+    """Si no, la direccion que se visualiza no es la que se ha guardado."""
+    assert torch.equal(Direccion(7).vector(64), Direccion(7).vector(64))
+    assert not torch.allclose(Direccion(7).vector(64), Direccion(8).vector(64))
+
+
+def test_la_direccion_no_toca_el_estado_global_de_torch():
+    """Las semillas globales las fija seed.py; un objetivo no puede moverlas."""
+    act = torch.randn(1, 8, 3, 3)
+    torch.manual_seed(0)
+    esperado = torch.rand(1)
+    torch.manual_seed(0)
+    Direccion(5)(act)
+    assert torch.equal(torch.rand(1), esperado)
+
+
+def test_direccion_funciona_tambien_en_la_salida():
+    """En fc es una combinacion de logits."""
+    act = torch.randn(1, 10)
+    v = Direccion(1).vector(10)
+    assert torch.allclose(Direccion(1)(act), (act[0] * v).sum())
+
+
+# --- Interpolacion: (1 - w_i) A + w_i B ---------------------------------
+
+def test_los_extremos_de_la_fila_son_las_dos_neuronas():
+    """La primera imagen solo ve a A y la ultima solo a B. Con los pesos al
+    reves la fila saldria invertida, sin ningun error."""
+    w = Interpolacion.pesos(5)
+    assert w[0] == 0.0 and w[-1] == 1.0
+    assert torch.allclose(w, torch.tensor([0.0, 0.25, 0.5, 0.75, 1.0]))
+
+
+def test_cada_imagen_tiene_su_peso():
+    """Imagen 0 con A=1 y B=0, imagen 1 con A=0 y B=1, en una fila de 2: la
+    imagen 0 solo puntua por A y la 1 solo por B, asi que da 1 de media."""
+    act = torch.zeros(2, 2, 3, 3)
+    act[0, 0] = 1.0     # imagen 0, canal A
+    act[1, 1] = 1.0     # imagen 1, canal B
+    assert Interpolacion(0, 1)(act).item() == pytest.approx(1.0)
+    # Cambiadas de sitio, cada imagen activa justo el canal que no le toca.
+    assert Interpolacion(1, 0)(act).item() == pytest.approx(0.0)
+
+
+def test_la_interpolacion_de_un_canal_consigo_mismo_es_canal():
+    act = torch.randn(4, 3, 5, 5)
+    assert torch.allclose(Interpolacion(2, 2)(act), Canal(2)(act))
+
+
+def test_los_componentes_de_la_interpolacion_son_sus_extremos():
+    act = torch.randn(3, 4, 2, 2)
+    (_, a), (_, b) = Interpolacion(1, 2).componentes(act)
+    assert torch.allclose(a, act[0, 1].mean())
+    assert torch.allclose(b, act[2, 2].mean())
+
+
+def test_la_interpolacion_necesita_un_lote():
+    with pytest.raises(ValueError, match="imagen.lote"):
+        Interpolacion(0, 1)(torch.randn(1, 4, 3, 3))
+
+
+def test_la_interpolacion_valida_los_canales():
+    with pytest.raises(IndexError, match="no existe"):
+        Interpolacion(0, 99)(torch.randn(2, 4, 3, 3))
+
+
 # --- Rangos ---------------------------------------------------------------
 
 def test_un_canal_inexistente_falla():
@@ -195,6 +282,30 @@ def test_construir_objetivo_lee_el_tipo():
 def test_capa_no_necesita_canal():
     """Layer no elige unidad: el YAML no tiene por que traer 'canal'."""
     assert construir_objetivo({"tipo": "capa"}) == Capa()
+
+
+def test_direccion_lee_su_semilla():
+    assert construir_objetivo({"tipo": "direccion", "direccion": 4}) == Direccion(4)
+
+
+def test_suma_lee_la_lista_de_canales():
+    assert construir_objetivo({"tipo": "suma", "canales": [3, 8]}) == Suma((Canal(3), Canal(8)))
+
+
+def test_suma_es_la_suma_de_sus_canales():
+    act = torch.randn(1, 10, 4, 4)
+    suma = construir_objetivo({"tipo": "suma", "canales": [3, 8]})
+    assert torch.allclose(suma(act), Canal(3)(act) + Canal(8)(act))
+
+
+def test_interpolacion_lee_sus_dos_canales():
+    ocfg = {"tipo": "interpolacion", "canales": [12, 40]}
+    assert construir_objetivo(ocfg) == Interpolacion(12, 40)
+
+
+def test_la_interpolacion_quiere_exactamente_dos_canales():
+    with pytest.raises(ValueError, match="2"):
+        construir_objetivo({"tipo": "interpolacion", "canales": [1, 2, 3]})
 
 
 def test_logit_lee_la_clase_de_canal():

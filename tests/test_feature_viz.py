@@ -18,6 +18,7 @@ from torchvision.models import resnet18
 from src.interpretability.feature_viz import (
     ImagenFourier,
     UnidadMuerta,
+    alineacion,
     aplicar_robustez,
     maximizar_activacion,
     nombre_salida,
@@ -63,6 +64,89 @@ def test_la_imagen_sale_en_el_rango_valido():
     assert imagen.min() >= 0.0 and imagen.max() <= 1.0
 
 
+def test_un_lote_da_varias_imagenes_distintas():
+    """Cada imagen del lote parte de su propio ruido. Si compartieran el
+    ruido, una interpolacion empezaria con todas iguales."""
+    imagenes = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0), lote=3)()
+    assert imagenes.shape == (3, 3, TAM, TAM)
+    assert not torch.allclose(imagenes[0], imagenes[1])
+
+
+def test_lote_uno_es_la_imagen_de_siempre():
+    """Admitir lotes no puede cambiar las visualizaciones que ya existian."""
+    a = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0))()
+    b = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0), lote=1)()
+    assert torch.equal(a, b)
+
+
+RECETA = [[1, 2], [1, 4], [2, 8]]
+
+
+def test_la_parte_compartida_de_un_fotograma_es_igual_en_toda_la_fila():
+    imagen = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0),
+                           lote=4, compartida=[[1, 4]])
+    with torch.no_grad():
+        imagen.espectro.zero_()
+        imagen.compartida[0].normal_(generator=torch.Generator().manual_seed(1))
+        fila = imagen()
+    for i in range(1, 4):
+        assert torch.allclose(fila[0], fila[i])
+
+
+def test_la_parte_compartida_de_dos_fotogramas_cambia_a_lo_largo_de_la_fila():
+    """Con dos fotogramas clave, las imagenes de en medio estan entre las de
+    los extremos: la vecina se parece mas que la del otro extremo."""
+    imagen = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0),
+                           lote=5, compartida=[[2, 4]])
+    with torch.no_grad():
+        imagen.espectro.zero_()
+        imagen.compartida[0].normal_(generator=torch.Generator().manual_seed(1))
+        fila = imagen()
+    cerca = (fila[0] - fila[1]).abs().mean()
+    lejos = (fila[0] - fila[4]).abs().mean()
+    assert cerca < lejos
+
+
+def test_la_parte_compartida_no_cambia_las_imagenes_sueltas():
+    """Es una pieza de la interpolacion: con lote=1 ni se crea, asi que todas
+    las visualizaciones de una imagen siguen saliendo igual que antes."""
+    a = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0))()
+    b = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0),
+                      compartida=RECETA)()
+    assert torch.equal(a, b)
+
+
+def test_la_parte_compartida_no_altera_el_ruido_propio():
+    """Se crea despues del espectro: el ruido de cada imagen es el mismo con
+    y sin parte compartida."""
+    a = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0), lote=3)
+    b = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0), lote=3,
+                      compartida=RECETA)
+    assert torch.equal(a.espectro, b.espectro)
+
+
+def test_la_parte_compartida_recibe_gradiente():
+    """Si no lo recibiera, se quedaria en el ruido inicial y la fila no
+    compartiria nada."""
+    imagen = ImagenFourier(TAM, TAM, generador=torch.Generator().manual_seed(0),
+                           lote=3, compartida=RECETA)
+    imagen()[:, 0].mean().backward()
+    assert len(imagen.compartida) == len(RECETA)
+    assert all(torch.any(baja.grad != 0) for baja in imagen.compartida)
+
+
+def test_el_bucle_usa_la_parte_compartida():
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer3", "canales": [1, 2]}
+    cfg["imagen"]["lote"] = 3
+    cfg["imagen"]["compartida"] = RECETA
+    con, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
+    cfg["imagen"]["compartida"] = []
+    sin, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
+    assert con.shape == (3, 3, TAM, TAM)
+    assert not torch.allclose(con, sin)
+
+
 def test_la_robustez_conserva_el_tamano():
     """Las transformaciones recortan al tamano de partida. Si no, el modelo
     recibe una entrada de otro tamano y la comparacion entre pasos se rompe."""
@@ -85,6 +169,22 @@ def test_resolver_modulo_navega_las_rutas_con_indices():
     modelo = _modelo_congelado()
     assert resolver_modulo(modelo, "fc") is modelo.fc
     assert resolver_modulo(modelo, "layer3.1.conv2") is modelo.layer3[1].conv2
+
+
+def test_la_robustez_transforma_igual_todo_el_lote():
+    """Si cada imagen recibiera un encuadre distinto, las de una
+    interpolacion se desalinearian entre si."""
+    x = torch.rand(1, 3, TAM, TAM).repeat(2, 1, 1, 1)
+    salida = aplicar_robustez(x, CFG["robustez"], torch.Generator().manual_seed(0))
+    assert torch.equal(salida[0], salida[1])
+
+
+def test_el_bucle_devuelve_el_lote_entero():
+    cfg = copy.deepcopy(CFG)
+    cfg["imagen"]["lote"] = 3
+    imagenes, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
+    assert imagenes.shape == (3, 3, TAM, TAM)
+    assert len(historial) == CFG["optimizacion"]["pasos"]
 
 
 def test_los_pesos_no_se_mueven():
@@ -121,6 +221,17 @@ def test_deepdream_sube_la_energia_de_la_capa():
     """El mismo bucle, con el objetivo Layer sobre una capa intermedia."""
     cfg = copy.deepcopy(CFG)
     cfg["objetivo"] = {"tipo": "capa", "capa": "layer2"}
+    cfg["optimizacion"]["pasos"] = 12
+    _, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+    primeros = sum(historial[:4]) / 4
+    ultimos = sum(historial[-4:]) / 4
+    assert ultimos > primeros, f"de {primeros:+.4f} a {ultimos:+.4f}"
+
+
+def test_la_direccion_sube():
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "direccion", "capa": "layer3.1.conv2", "direccion": 0}
     cfg["optimizacion"]["pasos"] = 12
     _, historial = maximizar_activacion(cfg, modelo=_modelo_congelado())
 
@@ -190,6 +301,111 @@ def test_una_unidad_muerta_se_detecta_en_el_primer_paso():
         maximizar_activacion(cfg, modelo=modelo)
 
 
+# --- Alineacion -----------------------------------------------------------
+
+def test_la_alineacion_es_cero_si_el_lote_es_igual():
+    act = torch.randn(1, 4, 5, 5).repeat(3, 1, 1, 1)
+    assert alineacion(act, 2.0, 4).item() == 0.0
+
+
+def test_la_alineacion_de_dos_imagenes():
+    a, b = torch.zeros(1, 2, 3, 3), torch.ones(1, 2, 3, 3)
+    assert alineacion(torch.cat([a, b]), 2.0, 4).item() == pytest.approx(0.5)
+
+
+def test_las_parejas_lejanas_pesan_menos():
+    """Con tres imagenes 0, 0, 1: la pareja (1,2) pesa 1/2 y la (0,2), que
+    estan a distancia 2, pesa 1/4. Si el decaimiento no se aplicase, o se
+    aplicase al reves, el total seria otro."""
+    act = torch.tensor([0.0, 0.0, 1.0]).view(3, 1, 1, 1)
+    assert alineacion(act, 2.0, 4).item() == pytest.approx(0.5 + 0.25)
+    assert alineacion(act, 2.0, 1).item() == pytest.approx(0.5)
+
+
+def test_la_alineacion_acerca_las_imagenes_del_lote():
+    """El efecto que se busca: con alineacion fuerte, las imagenes de la fila
+    acaban mas parecidas entre si que sin ella."""
+    def separacion(peso):
+        cfg = copy.deepcopy(CFG)
+        cfg["imagen"]["lote"] = 3
+        cfg["optimizacion"]["pasos"] = 12
+        cfg["regularizacion"]["alineacion"] = {"peso": peso, "capas": ["layer1"],
+                                               "decaimiento": 2.0, "alcance": 4}
+        imagenes, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
+        return (imagenes[1:] - imagenes[:-1]).abs().mean().item()
+
+    assert separacion(1000.0) < separacion(0.0)
+
+
+def test_la_alineacion_no_tapa_una_unidad_muerta():
+    """La alineacion tambien mueve la imagen. Si la comprobacion mirase el
+    gradiente total, una unidad muerta pasaria desapercibida."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "canal", "capa": "layer4", "canal": 0}
+    cfg["imagen"]["lote"] = 2
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capas": ["layer1"],
+                                           "decaimiento": 2.0, "alcance": 4}
+    modelo = _modelo_congelado()
+    modelo.layer4.register_forward_hook(lambda _m, _e, s: s * 0)
+    with pytest.raises(UnidadMuerta):
+        maximizar_activacion(cfg, modelo=modelo)
+
+
+def test_la_alineacion_suma_varias_capas(monkeypatch):
+    """lucid alinea en dos capas a la vez. Si solo se usara la primera de la
+    lista no habria error, solo una alineacion mas floja."""
+    import src.interpretability.feature_viz as fv
+    vistos = []
+    original = fv.alineacion
+    monkeypatch.setattr(fv, "alineacion",
+                        lambda act, d, a: vistos.append(act.shape[1]) or original(act, d, a))
+    cfg = copy.deepcopy(CFG)
+    cfg["imagen"]["lote"] = 2
+    cfg["optimizacion"]["pasos"] = 1
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capas": ["layer1", "layer2"],
+                                           "decaimiento": 2.0, "alcance": 4}
+    maximizar_activacion(cfg, modelo=_modelo_congelado())
+    assert vistos == [64, 128]      # canales de layer1 y de layer2
+
+
+def _con_canal_muerto(modelo, z):
+    """layer4 con el canal z anulado pero aun en el grafo, como un ReLU."""
+    mascara = torch.ones(1, 512, 1, 1)
+    mascara[0, z] = 0
+    modelo.layer4.register_forward_hook(lambda _m, _e, s: s * mascara)
+    return modelo
+
+
+def test_una_neurona_muerta_dentro_de_una_suma_se_detecta():
+    """El canal 1 esta vivo y tapa al 0 si solo se mira la suma."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "suma", "capa": "layer4", "canales": [0, 1]}
+    with pytest.raises(UnidadMuerta, match=r"canal\[0\]"):
+        maximizar_activacion(cfg, modelo=_con_canal_muerto(_modelo_congelado(), 0))
+
+
+def test_un_extremo_muerto_de_la_interpolacion_se_detecta():
+    """Sin esto la primera imagen de la fila se quedaria en el ruido inicial
+    y la interpolacion pareceria correcta."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer4", "canales": [0, 1]}
+    cfg["imagen"]["lote"] = 3
+    with pytest.raises(UnidadMuerta, match="primera imagen"):
+        maximizar_activacion(cfg, modelo=_con_canal_muerto(_modelo_congelado(), 0))
+
+
+def test_los_hooks_se_quitan_al_terminar():
+    """Si quedase uno enganchado, la siguiente llamada con el mismo modelo
+    (la app lo reutiliza) capturaria de mas y gastaria memoria."""
+    cfg = copy.deepcopy(CFG)
+    cfg["imagen"]["lote"] = 2
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capas": ["layer1"],
+                                           "decaimiento": 2.0, "alcance": 4}
+    modelo = _modelo_congelado()
+    maximizar_activacion(cfg, modelo=modelo)
+    assert not modelo.fc._forward_hooks and not modelo.layer1._forward_hooks
+
+
 def test_el_nombre_del_fichero_distingue_los_dos_objetivos():
     """Channel y Neuron sobre la misma capa y canal no pueden acabar en el
     mismo PNG, o uno pisa al otro sin avisar."""
@@ -205,6 +421,50 @@ def test_el_nombre_del_deepdream_no_depende_del_canal():
     a = nombre_salida({"tipo": "capa", "capa": "layer3", "canal": 0})
     b = nombre_salida({"tipo": "capa", "capa": "layer3", "canal": 42})
     assert a == b == "layer3_capa"
+
+
+def test_el_nombre_de_la_direccion_es_su_semilla():
+    """Dos direcciones distintas no pueden pisarse el PNG, y el canal que
+    quede en el YAML no puede cambiar el nombre de la misma direccion."""
+    a = nombre_salida({"tipo": "direccion", "capa": "layer4", "direccion": 1, "canal": 0})
+    b = nombre_salida({"tipo": "direccion", "capa": "layer4", "direccion": 1, "canal": 9})
+    c = nombre_salida({"tipo": "direccion", "capa": "layer4", "direccion": 2, "canal": 0})
+    assert a == b == "layer4_direccion_s1"
+    assert a != c
+
+
+def test_el_nombre_de_la_suma_lleva_todos_los_canales():
+    """A+B y A solo no pueden pisarse el PNG."""
+    assert nombre_salida({"tipo": "suma", "capa": "layer4", "canales": [12, 40]}) \
+        == "layer4_suma_12+40"
+
+
+def test_la_interpolacion_cambia_a_lo_largo_de_la_fila():
+    """La primera imagen tiene que activar A mas que la ultima, y la ultima B
+    mas que la primera: es lo que significa ir de una neurona a otra."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer3", "canales": [1, 2]}
+    cfg["imagen"]["lote"] = 3
+    cfg["optimizacion"]["pasos"] = 24
+    modelo = _modelo_congelado()
+    fila, _ = maximizar_activacion(cfg, modelo=modelo)
+
+    capturado = {}
+    modelo.layer3.register_forward_hook(lambda _m, _e, s: capturado.__setitem__("a", s))
+    ncfg = CFG["normalizacion"]
+    media = torch.tensor(ncfg["media"]).view(1, 3, 1, 1)
+    desv = torch.tensor(ncfg["desviacion"]).view(1, 3, 1, 1)
+    with torch.no_grad():
+        modelo((fila - media) / desv)
+    canal_a = capturado["a"][:, 1].mean(dim=(1, 2))
+    canal_b = capturado["a"][:, 2].mean(dim=(1, 2))
+    assert canal_a[0] > canal_a[-1]
+    assert canal_b[-1] > canal_b[0]
+
+
+def test_el_nombre_de_la_interpolacion_lleva_los_dos_extremos():
+    ocfg = {"tipo": "interpolacion", "capa": "layer4", "canales": [12, 40]}
+    assert nombre_salida(ocfg) == "layer4_interpolacion_12-40"
 
 
 def test_la_misma_seed_da_la_misma_imagen():

@@ -9,6 +9,14 @@ Replica los objetivos del articulo de Olah et al., "Feature Visualization"
     Logit     pre_softmax[k]       la salida de la clase k antes de la softmax
     Prob.     softmax[k]           la probabilidad de la clase k
 
+Y de la seccion "The Interaction between Neurons":
+
+    Direction  v . layer_n[x, y, :]  una direccion cualquiera del espacio de
+                                     activaciones, promediada en el espacio
+    Suma       A + B + ...           varios objetivos a la vez (aritmetica de
+                                     neuronas, "jointly optimized")
+    Interp.    (1-w_i) A + w_i B     una fila de imagenes que va de A a B
+
 La unica diferencia entre ellos es la reduccion: que parte de la capa se toma
 y como se resume en un escalar. Todo lo demas (parametrizacion en Fourier,
 decorrelacion de color, robustez) es comun y vive en feature_viz.py.
@@ -208,12 +216,57 @@ class Probabilidad:
 
 
 @dataclass(frozen=True)
+class Direccion:
+    """Objetivo Direction: v . layer_n[x, y, :], promediado en el espacio.
+
+    El articulo llama espacio de activaciones al de todas las combinaciones de
+    canales de una capa. Cada canal es un eje; una combinacion de canales es
+    un vector v cualquiera de ese espacio. En cada posicion se hace el
+    producto escalar del vector de canales con v, y se promedia. Si v fuese el
+    eje z (todo ceros salvo un 1 en z) esto seria exactamente Canal(z).
+
+    v es aleatorio: normal y de norma 1. Se guarda la semilla y no el vector,
+    asi el objetivo sigue siendo comparable y serializable como los demas, y
+    no necesita saber cuantos canales tiene la capa hasta que se aplica.
+
+    Ojo en capas post-ReLU (las salidas de bloque): los canales no bajan de
+    cero, asi que los pesos negativos de v solo pueden pedir que ese canal se
+    calle. En una conv pre-ReLU si pueden empujarlo por debajo de cero.
+
+    Referencia: lucid.optvis.objectives.direction con cossim_pow=0.
+    """
+
+    semilla: int
+
+    def vector(self, canales: int) -> torch.Tensor:
+        """La direccion v para una capa de `canales` canales, de norma 1."""
+        # Generador propio: no toca el estado global, que fija seed.py.
+        generador = torch.Generator().manual_seed(self.semilla)
+        v = torch.randn(canales, generator=generador)
+        return v / v.norm()
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        v = self.vector(act.shape[1]).to(act.device)
+        # (C,) -> (1, C, 1, 1) en una conv y (1, C) en la lineal de salida.
+        v = v.view(1, -1, *([1] * (act.dim() - 2)))
+        return (act * v).sum(dim=1).mean()
+
+    def __str__(self) -> str:
+        return f"direccion[semilla {self.semilla}]"
+
+
+@dataclass(frozen=True)
 class Suma:
     """Varios objetivos maximizados a la vez.
 
     Es el "jointly optimized" de la seccion "Interaction between Neurons" del
     articulo: la imagen resultante tiene que contentar a todas las unidades a
-    la vez, y eso revela como se combinan.
+    la vez, y eso revela como se combinan. Es aritmetica de neuronas: su
+    ejemplo es que una neurona "blanco y negro" mas una "mosaico" da un
+    mosaico en blanco y negro.
+
+    Desde el YAML (tipo 'suma') se construye como suma de canales de la
+    misma capa; desde codigo admite cualquier mezcla de objetivos.
     """
 
     partes: tuple
@@ -223,22 +276,94 @@ class Suma:
             raise ValueError("una Suma necesita al menos un objetivo")
         return sum(parte(act) for parte in self.partes)
 
+    def componentes(self, act: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
+        """Cada sumando por separado, para comprobar que ninguno esta muerto.
+
+        Si uno lo esta, la suma sigue teniendo gradiente por los demas y el
+        fallo no se veria: la imagen ignoraria esa neurona sin avisar.
+        """
+        return [(str(parte), parte(act)) for parte in self.partes]
+
     def __str__(self) -> str:
         return " + ".join(str(parte) for parte in self.partes)
 
 
+@dataclass(frozen=True)
+class Interpolacion:
+    """Interpolacion entre dos canales de la misma capa, a lo largo del lote.
+
+    La imagen i de una fila de N maximiza (1 - w_i) * Canal(a) + w_i * Canal(b)
+    con w_i = i / (N - 1): la primera es solo a, la ultima solo b, y las de
+    en medio muestran como se combinan. Es la "linear interpolation between
+    the individual channel objectives" del articulo.
+
+    Necesita imagen.lote >= 2. Sola no basta para que la fila se vea como una
+    transicion: el articulo le anade la alineacion (feature_viz.alineacion) y
+    una parametrizacion compartida entre las imagenes.
+
+    Se promedia sobre el lote, como el resto de objetivos, en vez de sumar como
+    lucid: asi la activacion que se registra es comparable a la de Canal. Con
+    Adam la escala no cambia la optimizacion, pero si el peso relativo de las
+    penalizaciones; los pesos del YAML estan pensados para esta convencion.
+
+    Referencia: lucid.optvis.objectives.channel_interpolate.
+    """
+
+    a: int
+    b: int
+
+    @staticmethod
+    def pesos(n: int) -> torch.Tensor:
+        """w_i de cada imagen de una fila de n: de 0 (solo a) a 1 (solo b)."""
+        return torch.linspace(0.0, 1.0, n)
+
+    def __call__(self, act: torch.Tensor) -> torch.Tensor:
+        n = act.shape[0]
+        if n < 2:
+            raise ValueError(
+                f"la interpolacion necesita al menos 2 imagenes y el lote tiene "
+                f"{n}. Sube imagen.lote en el YAML (p.ej. --lote 6)."
+            )
+        _validar_canal(act, self.a)
+        _validar_canal(act, self.b)
+        w = self.pesos(n).to(act.device)
+        # Media espacial de cada canal, imagen a imagen: (N,).
+        a = act[:, self.a].reshape(n, -1).mean(dim=1)
+        b = act[:, self.b].reshape(n, -1).mean(dim=1)
+        return ((1 - w) * a + w * b).mean()
+
+    def componentes(self, act: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
+        """a en la primera imagen y b en la ultima, por separado.
+
+        La primera imagen solo puntua por a. Si a esta muerto, b sigue dando
+        gradiente al objetivo entero y nadie avisaria de que esa imagen no
+        recibe nada de el.
+        """
+        return [(f"canal[{self.a}] en la primera imagen", act[:1, self.a].mean()),
+                (f"canal[{self.b}] en la ultima imagen", act[-1:, self.b].mean())]
+
+    def __str__(self) -> str:
+        return f"interpolacion[{self.a} -> {self.b}]"
+
+
 OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa,
-             "logit": Logit, "probabilidad": Probabilidad}
+             "logit": Logit, "probabilidad": Probabilidad,
+             "direccion": Direccion, "suma": Suma,
+             "interpolacion": Interpolacion}
+
+Objetivo = (Canal | Neurona | Capa | Logit | Probabilidad | Direccion | Suma
+            | Interpolacion)
 
 
-def construir_objetivo(ocfg: dict
-                       ) -> Canal | Neurona | Capa | Logit | Probabilidad:
+def construir_objetivo(ocfg: dict) -> Objetivo:
     """Crea el objetivo a partir de la subconfiguracion 'objetivo' del YAML.
 
     Args:
-        ocfg: dict con 'tipo' ('canal', 'neurona', 'capa', 'logit' o
-            'probabilidad'), 'canal' (el indice z, que en 'logit' y
-            'probabilidad' es la clase y que 'capa' no usa) y, solo para
+        ocfg: dict con 'tipo' (una clave de OBJETIVOS), 'canal' (el indice
+            z, que en 'logit' y 'probabilidad' es la clase y que 'capa' y
+            'direccion' no usan), 'direccion' (la semilla del vector, solo
+            para 'direccion'), 'canales' (la lista de canales en 'suma';
+            el de partida y el de llegada en 'interpolacion') y, solo para
             'neurona', 'x' e 'y' opcionales.
 
     Returns:
@@ -250,6 +375,16 @@ def construir_objetivo(ocfg: dict
                          f"Opciones: {', '.join(OBJETIVOS)}")
     if tipo == "capa":
         return Capa()
+    if tipo == "direccion":
+        return Direccion(int(ocfg["direccion"]))
+    if tipo == "suma":
+        return Suma(tuple(Canal(int(z)) for z in ocfg["canales"]))
+    if tipo == "interpolacion":
+        canales = list(ocfg["canales"])
+        if len(canales) != 2:
+            raise ValueError(f"la interpolacion va de un canal a otro: 'canales' "
+                             f"tiene que tener 2 y tiene {len(canales)}")
+        return Interpolacion(int(canales[0]), int(canales[1]))
     z = int(ocfg["canal"])
     if tipo == "canal":
         return Canal(z)

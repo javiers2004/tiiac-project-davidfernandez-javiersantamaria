@@ -9,6 +9,9 @@ que esa neurona busca.
     python -m src.interpretability.feature_viz --tipo capa --capa layer3
     python -m src.interpretability.feature_viz --tipo logit --capa fc --canal 7
     python -m src.interpretability.feature_viz --tipo probabilidad --capa fc --canal 7
+    python -m src.interpretability.feature_viz --tipo direccion --capa layer4.1.conv2 --direccion 3
+    python -m src.interpretability.feature_viz --tipo suma --capa layer4 --canales 12 40
+    python -m src.interpretability.feature_viz --tipo interpolacion --capa layer4 --canales 12 40 --lote 6
 
 Tres detalles sin los cuales esto NO funciona, y que son casi toda la calidad
 del resultado:
@@ -78,15 +81,42 @@ class ImagenFourier(nn.Module):
     Fourier. Cada coeficiente se escala por 1/f**decay antes de la transformada
     inversa, asi que un paso de gradiente del mismo tamano mueve mucho mas las
     frecuencias bajas que las altas. Eso es lo que evita el ruido adversarial.
+
+    Con lote > 1 se optimizan varias imagenes a la vez, cada una con su propio
+    ruido de partida. Es lo que necesita la interpolacion entre neuronas, donde
+    cada imagen de la fila tiene un peso distinto.
+
+    `compartida` anade la parte COMPARTIDA de la interpolacion del articulo
+    ("a combination of separate and shared image parameterizations"): tensores
+    de baja resolucion comunes a todo el lote que se suman a la parte propia
+    de cada imagen. Cada uno es (imagenes, divisor): un tensor de
+    alto/divisor x ancho/divisor con `imagenes` fotogramas clave, reescalado
+    al tamano real y, a lo largo del lote, interpolado entre fotogramas. Con
+    imagenes=1 es identico en toda la fila; con 2 va cambiando suavemente de
+    un extremo al otro. Facilita que los objetos queden en el mismo sitio sin
+    impedir que cada imagen sea distinta. Solo se usa con lote > 1.
+
+    Referencia: lucid.optvis.param.lowres_tensor y el interpolate_param_f del
+    notebook neuron_interaction.ipynb de lucid.
     """
 
     def __init__(self, alto: int, ancho: int, decay: float = 1.0,
-                 sd: float = 0.01, generador: torch.Generator | None = None):
+                 sd: float = 0.01, generador: torch.Generator | None = None,
+                 lote: int = 1, compartida: list | None = None):
         super().__init__()
-        self.alto, self.ancho = alto, ancho
-        ruido = torch.randn(1, 3, alto, ancho // 2 + 1, 2, generator=generador)
+        self.alto, self.ancho, self.lote = alto, ancho, lote
+        # Con lote=1 el ruido es exactamente el de antes de admitir lotes.
+        ruido = torch.randn(lote, 3, alto, ancho // 2 + 1, 2, generator=generador)
         self.espectro = nn.Parameter(ruido * sd)
         self.register_buffer("escala", self._escala_frecuencias(alto, ancho, decay))
+
+        # Se crea DESPUES del espectro para no alterar su ruido inicial.
+        compartida = compartida if lote > 1 else []
+        self.compartida = nn.ParameterList(
+            nn.Parameter(sd * torch.randn(1, 3, int(n), alto // int(div),
+                                          ancho // int(div), generator=generador))
+            for n, div in (compartida or [])
+        )
 
     @staticmethod
     def _escala_frecuencias(alto: int, ancho: int, decay: float) -> torch.Tensor:
@@ -101,15 +131,20 @@ class ImagenFourier(nn.Module):
         return torch.tensor(escala, dtype=torch.float32)
 
     def forward(self) -> torch.Tensor:
-        """Reconstruye la imagen RGB en [0, 1] a partir del espectro."""
+        """Reconstruye las imagenes RGB (lote, 3, H, W) en [0, 1]."""
         espectro = torch.view_as_complex(self.espectro) * self.escala
         imagen = torch.fft.irfft2(espectro, s=(self.alto, self.ancho))
         imagen = imagen / 4.0  # constante empirica de Olah et al.
+        for baja in self.compartida:
+            # (1, 3, fotogramas, h, w) -> (1, 3, lote, H, W) -> (lote, 3, H, W)
+            subida = F.interpolate(baja, size=(self.lote, self.alto, self.ancho),
+                                   mode="trilinear", align_corners=False)
+            imagen = imagen + subida[0].permute(1, 0, 2, 3)
 
         # Decorrelacion de color: (B,3,H,W) -> (N,3) -> matmul -> vuelta.
         color = torch.as_tensor(_COLOR_NORM, device=imagen.device)
         plano = imagen.permute(0, 2, 3, 1).reshape(-1, 3) @ color.T
-        imagen = plano.view(1, self.alto, self.ancho, 3).permute(0, 3, 1, 2)
+        imagen = plano.view(self.lote, self.alto, self.ancho, 3).permute(0, 3, 1, 2)
 
         # La sigmoide mantiene la imagen en [0,1] sin matar el gradiente, que
         # es lo que haria un clamp en cuanto la imagen tocase los extremos.
@@ -121,7 +156,9 @@ def aplicar_robustez(imagen: torch.Tensor, rcfg: dict,
     """Aplica jitter, escala y rotacion aleatorios a la imagen.
 
     Args:
-        imagen: tensor (1, 3, H, W) en [0, 1].
+        imagen: tensor (N, 3, H, W) en [0, 1]. Todas las imagenes del lote
+            reciben la MISMA transformacion, como en lucid: asi las de una
+            interpolacion siguen alineadas entre si.
         rcfg: subconfiguracion 'robustez'.
         generador: generador propio, para no tocar el estado global de torch.
 
@@ -197,8 +234,9 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             Se inyecta desde los tests, que no tienen los .tar disponibles.
 
     Returns:
-        (imagen, historial) con la imagen final (1,3,H,W) en [0,1] y la
-        activacion alcanzada en cada paso.
+        (imagen, historial) con las imagenes finales (lote,3,H,W) en [0,1] y
+        la activacion alcanzada en cada paso. lote sale de imagen.lote en el
+        YAML y es 1 si no esta.
     """
     dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if modelo is None:
@@ -218,23 +256,36 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     tam = int(icfg["tamano"])
     parametrizacion = ImagenFourier(tam, tam, decay=float(icfg["decay_power"]),
                                     sd=float(icfg["sd_inicial"]),
-                                    generador=generador).to(dispositivo)
+                                    generador=generador,
+                                    lote=int(icfg.get("lote", 1)),
+                                    compartida=icfg.get("compartida")).to(dispositivo)
 
-    # El hook captura la salida de la capa elegida. Sirve igual para 'fc'
-    # (salida 2D, N x clases) que para una conv intermedia (4D, N x C x H x W).
+    rcfg, gcfg = cfg["robustez"], cfg["regularizacion"]
+    peso_tv, peso_l2 = float(gcfg["tv"]), float(gcfg["l2"])
+    acfg = gcfg.get("alineacion") or {}
+    peso_alin = float(acfg.get("peso", 0.0))
+    # La alineacion compara imagenes del lote entre si: con una sola seria
+    # cero, asi que ni se calcula. Por eso puede tener peso en el YAML sin
+    # afectar a los objetivos de una imagen.
+    if parametrizacion.lote < 2:
+        peso_alin = 0.0
+    capas_alin = [str(c) for c in acfg["capas"]] if peso_alin else []
+
+    # Los hooks capturan la salida de cada capa que hace falta: la del
+    # objetivo y, si hay alineacion, las suyas (puede incluir la misma).
+    # Sirven igual para 'fc' (2D, N x clases) que para una conv (4D).
     capturado: dict[str, torch.Tensor] = {}
-    modulo = resolver_modulo(modelo, capa)
-    asa = modulo.register_forward_hook(
-        lambda _m, _entrada, salida: capturado.__setitem__("act", salida)
-    )
+    asas = [
+        resolver_modulo(modelo, c).register_forward_hook(
+            lambda _m, _entrada, salida, c=c: capturado.__setitem__(c, salida))
+        for c in dict.fromkeys([capa, *capas_alin])
+    ]
 
     optimizador = torch.optim.Adam(parametrizacion.parameters(),
                                    lr=float(pcfg["learning_rate"]))
     ncfg = cfg["normalizacion"]
     media = torch.tensor(ncfg["media"], device=dispositivo).view(1, 3, 1, 1)
     desv = torch.tensor(ncfg["desviacion"], device=dispositivo).view(1, 3, 1, 1)
-    rcfg, gcfg = cfg["robustez"], cfg["regularizacion"]
-    peso_tv, peso_l2 = float(gcfg["tv"]), float(gcfg["l2"])
 
     pasos = int(pcfg["pasos"])
     historial: list[float] = []
@@ -246,38 +297,51 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             entrada = aplicar_robustez(imagen, rcfg, generador)
             modelo((entrada - media) / desv)
 
-            # El objetivo decide la reduccion: Channel promedia el canal
-            # entero, Neuron toma una sola posicion, Layer promedia el
-            # cuadrado de la capa entera, Logit toma una clase de la salida
-            # y Probabilidad le pasa antes la softmax. Ver objetivos.py.
-            activacion = objetivo(capturado["act"])
-
-            perdida = -activacion
-            if peso_tv:
-                perdida = perdida + peso_tv * _variacion_total(imagen)
-            if peso_l2:
-                perdida = perdida + peso_l2 * imagen.pow(2).mean()
-
-            perdida.backward()
+            # El objetivo decide la reduccion: que parte de la capa se toma
+            # y como se resume en un escalar. Channel promedia un canal,
+            # Neuron toma una posicion, Direction proyecta sobre un vector...
+            # La lista entera, en la cabecera de objetivos.py.
+            activacion = objetivo(capturado[capa])
 
             # Una unidad muerta (post-ReLU en cero) no da gradiente, y el
             # bucle devolveria el ruido inicial sin una sola queja. Mas de la
             # mitad de las posiciones centrales de layer4 estan asi al
-            # arrancar, asi que conviene detectarlo en el primer paso.
+            # arrancar, asi que conviene detectarlo en el primer paso. Se mira
+            # el gradiente del OBJETIVO solo: las penalizaciones tambien mueven
+            # la imagen y taparian una unidad muerta. Y en una Suma o una
+            # Interpolacion, cada parte por separado, por el mismo motivo.
             if paso == 0:
-                _comprobar_gradiente(parametrizacion, objetivo, capa)
+                partes = (objetivo.componentes(capturado[capa])
+                          if hasattr(objetivo, "componentes")
+                          else [(str(objetivo), activacion)])
+                for nombre, valor in partes:
+                    _comprobar_gradiente(parametrizacion, valor, nombre, capa)
+
+            perdida = -activacion
+            metricas = {"viz/activacion": activacion.item()}
+            if peso_tv:
+                perdida = perdida + peso_tv * _variacion_total(imagen)
+            if peso_l2:
+                perdida = perdida + peso_l2 * imagen.pow(2).mean()
+            if peso_alin:
+                penal = sum(alineacion(capturado[c], float(acfg["decaimiento"]),
+                                       int(acfg["alcance"])) for c in capas_alin)
+                perdida = perdida + peso_alin * penal
+                metricas["viz/alineacion"] = penal.item()
+
+            perdida.backward()
 
             optimizador.step()
 
             # .item() rompe el grafo: sin esto se acumula memoria.
-            valor = activacion.item()
+            valor = metricas["viz/activacion"]
             historial.append(valor)
-            registrar(run, {"viz/activacion": valor,
-                            "viz/perdida": perdida.item()}, paso)
+            registrar(run, {**metricas, "viz/perdida": perdida.item()}, paso)
             if paso % max(1, pasos // 10) == 0:
                 print(f"paso {paso:4d}/{pasos}  activacion={valor:+.4f}")
     finally:
-        asa.remove()
+        for asa in asas:
+            asa.remove()
 
     with torch.no_grad():
         final = parametrizacion().detach().cpu()
@@ -292,9 +356,11 @@ class UnidadMuerta(RuntimeError):
     """
 
 
-def _comprobar_gradiente(parametrizacion: nn.Module, objetivo, capa: str) -> None:
+def _comprobar_gradiente(parametrizacion: nn.Module, activacion: torch.Tensor,
+                         objetivo, capa: str) -> None:
     """Falla pronto si el objetivo no mueve la imagen."""
-    grad = parametrizacion.espectro.grad
+    grad, = torch.autograd.grad(activacion, parametrizacion.espectro,
+                                retain_graph=True, allow_unused=True)
     if grad is not None and torch.any(grad != 0):
         return
     raise UnidadMuerta(
@@ -304,6 +370,26 @@ def _comprobar_gradiente(parametrizacion: nn.Module, objetivo, capa: str) -> Non
         f"del bloque (p.ej. '{capa}.1.conv2' en lugar de '{capa}'), elegir "
         f"otro canal, o mover (x, y) a otra posicion."
     )
+
+
+def alineacion(act: torch.Tensor, decaimiento: float, alcance: int) -> torch.Tensor:
+    """Penaliza que imagenes vecinas del lote activen distinto una capa.
+
+    Es el "small alignment objective" de la interpolacion del articulo:
+    empuja a que la imagen i y la i+d se parezcan en una capa BAJA, para que
+    el mismo objeto se dibuje en el mismo sitio a lo largo de la fila. Las
+    parejas mas alejadas pesan menos: 1 / decaimiento**d, con d de 1 a alcance.
+
+    Devuelve una penalizacion (>= 0) que se SUMA a la perdida. lucid la
+    devuelve con el signo cambiado porque alli todo se maximiza.
+
+    Referencia: lucid.optvis.objectives.alignment.
+    """
+    total = act.new_zeros(())
+    for d in range(1, alcance + 1):
+        for i in range(act.shape[0] - d):
+            total = total + (act[i] - act[i + d]).pow(2).mean() / decaimiento ** d
+    return total
 
 
 def _variacion_total(x: torch.Tensor) -> torch.Tensor:
@@ -325,12 +411,19 @@ def nombre_salida(ocfg: dict) -> str:
     Dos objetivos distintos sobre la misma capa y canal (Channel y Neuron) no
     pueden acabar en el mismo PNG, o uno pisa al otro sin avisar. Layer no
     elige canal, asi que no lo lleva: si lo llevara, el mismo DeepDream
-    saldria con un nombre distinto segun lo que quedase en el YAML.
+    saldria con un nombre distinto segun lo que quedase en el YAML. Direction
+    tampoco elige canal: lo que la identifica es la semilla de su vector.
     """
     capa = str(ocfg["capa"]).replace(".", "_")
     tipo = str(ocfg.get("tipo", "canal"))
     partes = [capa, tipo]
-    if tipo != "capa":
+    if tipo == "direccion":
+        partes.append(f"s{ocfg['direccion']}")
+    elif tipo == "suma":
+        partes.append("+".join(str(z) for z in ocfg["canales"]))
+    elif tipo == "interpolacion":
+        partes.append("-".join(str(z) for z in ocfg["canales"]))
+    elif tipo != "capa":
         partes.append(str(ocfg["canal"]))
     if tipo == "neurona":
         x, y = ocfg.get("x"), ocfg.get("y")
@@ -345,8 +438,11 @@ def main() -> int:
     ap.add_argument("--tipo", choices=list(OBJETIVOS), default=None,
                     help="Channel (canal entero), Neuron (una posicion), "
                          "Layer (capa entera al cuadrado, DeepDream), "
-                         "Class Logits (logit de la clase, solo en fc) o "
-                         "Class Probability (softmax de la clase, solo en fc)")
+                         "Class Logits (logit de la clase, solo en fc), "
+                         "Class Probability (softmax de la clase, solo en fc), "
+                         "Direction (vector aleatorio del espacio de activaciones), "
+                         "suma de varios canales (--canales) o interpolacion "
+                         "entre dos (--canales A B --lote N)")
     ap.add_argument("--capa", type=str, default=None,
                     help="modulo a maximizar, p.ej. 'fc' o 'layer3.1.conv2'")
     ap.add_argument("--canal", type=int, default=None,
@@ -356,6 +452,14 @@ def main() -> int:
                     help="fila del mapa; por defecto el centro (solo con --tipo neurona)")
     ap.add_argument("--y", type=int, default=None,
                     help="columna del mapa; por defecto el centro")
+    ap.add_argument("--direccion", type=int, default=None,
+                    help="semilla del vector aleatorio (solo con --tipo direccion)")
+    ap.add_argument("--canales", type=int, nargs="+", default=None,
+                    help="canales a sumar con --tipo suma, o de partida y de "
+                         "llegada con --tipo interpolacion")
+    ap.add_argument("--lote", type=int, default=None,
+                    help="imagenes que se optimizan a la vez; la interpolacion "
+                         "necesita 2 o mas")
     ap.add_argument("--pasos", type=int, default=None, help="pasos de optimizacion")
     args = ap.parse_args()
 
@@ -367,11 +471,14 @@ def main() -> int:
 
     # Solo se sobreescribe lo que se pide por CLI; el resto lo manda el YAML.
     for clave, valor in (("tipo", args.tipo), ("capa", args.capa),
-                         ("canal", args.canal), ("x", args.x), ("y", args.y)):
+                         ("canal", args.canal), ("x", args.x), ("y", args.y),
+                         ("direccion", args.direccion), ("canales", args.canales)):
         if valor is not None:
             cfg["objetivo"][clave] = valor
     if args.pasos is not None:
         cfg["optimizacion"]["pasos"] = args.pasos
+    if args.lote is not None:
+        cfg["imagen"]["lote"] = args.lote
 
     fijar_seed(int(cfg["experimento"]["seed"]))
     run = abrir_run(cfg)
@@ -381,7 +488,8 @@ def main() -> int:
     destino = RAIZ / cfg["salida"]["directorio"]
     destino.mkdir(parents=True, exist_ok=True)
     fichero = destino / (nombre_salida(cfg["objetivo"]) + ".png")
-    save_image(imagen, fichero)
+    # Un lote se guarda como UNA fila: es como se lee una interpolacion.
+    save_image(imagen, fichero, nrow=imagen.shape[0])
 
     print(f"\nactivacion inicial: {historial[0]:+.4f}")
     print(f"activacion final  : {historial[-1]:+.4f}")

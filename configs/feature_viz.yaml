@@ -24,6 +24,13 @@ objetivo:
   #   probabilidad -> Class Probability, softmax[k]; solo con capa: fc.
   #                   Para comparar con 'logit', como en el articulo: sube
   #                   tambien hundiendo las demas clases.
+  # De la seccion "The Interaction between Neurons":
+  #   direccion -> Direction, v . layer_n[x, y, :] con v aleatorio de norma 1;
+  #                ignora 'canal' y usa 'direccion' como semilla de v
+  #   suma      -> neuronas sumadas ("jointly optimized"): los Channel de
+  #                'canales' a la vez; ignora 'canal'
+  #   interpolacion -> una fila de imagen.lote imagenes que va del canal
+  #                canales[0] al canales[1]; necesita lote >= 2
   tipo: canal
   capa: fc                # 'fc' = capa de salida. Tambien vale 'layer3.1.conv2'.
   canal: 0                # el indice z: la clase (0..1080) en fc, o el canal
@@ -31,9 +38,24 @@ objetivo:
   # OJO: x es la FILA e y la COLUMNA. Ver la cabecera de objetivos.py.
   x: null
   y: null
+  # Solo para tipo 'direccion': cada semilla es una direccion distinta.
+  direccion: 0
+  # Para tipo 'suma': los canales de 'capa' que se suman. Para
+  # 'interpolacion': el canal de partida y el de llegada.
+  canales: [0, 1]
 
 imagen:
   tamano: 224
+  # Cuantas imagenes se optimizan a la vez. 1 para todos los objetivos salvo
+  # la interpolacion, que reparte sus pesos a lo largo del lote.
+  lote: 1
+  # Parte compartida de la interpolacion: tensores de baja resolucion comunes a
+  # todo el lote, que ayudan a que los objetos queden alineados en la fila.
+  # Cada entrada es [fotogramas, divisor]: un tensor de tamano/divisor con
+  # esos fotogramas clave, interpolados a lo largo del lote. Solo se usa con
+  # lote > 1. [] la desactiva. Es la receta del notebook de lucid
+  # (neuron_interaction.ipynb, interpolate_param_f):
+  compartida: [[1, 2], [1, 4], [1, 8], [2, 8], [1, 16], [2, 16]]
   # Atenuacion de las altas frecuencias. Subirlo da imagenes mas suaves y
   # bajarlo, mas detalle y mas ruido. 1.0 es el valor de Olah et al.
   decay_power: 1.0
@@ -51,6 +73,28 @@ regularizacion:
   # y se suben solo si la imagen sale con ruido residual.
   tv: 0.0
   l2: 0.0
+  # Alineacion, de la interpolacion de "The Interaction between Neurons":
+  # penaliza que imagenes vecinas del lote activen distinto una capa BAJA,
+  # para que el mismo objeto quede en el mismo sitio a lo largo de la fila.
+  # Solo actua con imagen.lote > 1: con una imagen ni se calcula.
+  # peso 0 = desactivada.
+  alineacion:
+    # Elegido con un barrido sobre layer4 463 -> 233 con la parte compartida
+    # (6 imagenes, 256 pasos):
+    #     peso   activacion extremos   diferencia entre vecinas (pixel)
+    #       0        100 %                 0.149   la fila salta de golpe
+    #      10        ~99 %                 0.103   la fila salta de golpe
+    #     100        ~91 %                 0.052   transicion gradual
+    #    1000        ~45 %                 0.017   casi no cambia
+    # lucid usa 0.1, pero suma el objetivo sobre el lote en vez de promediarlo
+    # y sobre otro modelo: los pesos no son trasladables.
+    peso: 100.0
+    # Capas en las que se compara, mas bajas que la del objetivo. lucid usa
+    # dos (mixed3b y mixed4a para interpolar en mixed4a).
+    capas: [layer2, layer3]
+    decaimiento: 5.0      # la pareja (i, i+d) pesa 1 / decaimiento**d. lucid:
+                          # 2 en alignment(), 5 en su notebook de interpolacion
+    alcance: 4            # d va de 1 a alcance (lucid: 4)
 
 robustez:
   # Sin esto la optimizacion produce ruido adversarial en vez de patrones.
