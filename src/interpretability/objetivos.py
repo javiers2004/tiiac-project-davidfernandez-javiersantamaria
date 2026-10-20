@@ -13,6 +13,8 @@ Y de la seccion "The Interaction between Neurons":
 
     Direction  v . layer_n[x, y, :]  una direccion cualquiera del espacio de
                                      activaciones, promediada en el espacio
+    Suma       A + B + ...           varios objetivos a la vez (aritmetica de
+                                     neuronas, "jointly optimized")
 
 La unica diferencia entre ellos es la reduccion: que parte de la capa se toma
 y como se resume en un escalar. Todo lo demas (parametrizacion en Fourier,
@@ -258,7 +260,12 @@ class Suma:
 
     Es el "jointly optimized" de la seccion "Interaction between Neurons" del
     articulo: la imagen resultante tiene que contentar a todas las unidades a
-    la vez, y eso revela como se combinan.
+    la vez, y eso revela como se combinan. Es aritmetica de neuronas: su
+    ejemplo es que una neurona "blanco y negro" mas una "mosaico" da un
+    mosaico en blanco y negro.
+
+    Desde el YAML (tipo 'suma') se construye como suma de canales de la
+    misma capa; desde codigo admite cualquier mezcla de objetivos.
     """
 
     partes: tuple
@@ -274,7 +281,7 @@ class Suma:
 
 OBJETIVOS = {"canal": Canal, "neurona": Neurona, "capa": Capa,
              "logit": Logit, "probabilidad": Probabilidad,
-             "direccion": Direccion}
+             "direccion": Direccion, "suma": Suma}
 
 Objetivo = Canal | Neurona | Capa | Logit | Probabilidad | Direccion | Suma
 
@@ -286,7 +293,8 @@ def construir_objetivo(ocfg: dict) -> Objetivo:
         ocfg: dict con 'tipo' (una clave de OBJETIVOS), 'canal' (el indice
             z, que en 'logit' y 'probabilidad' es la clase y que 'capa' y
             'direccion' no usan), 'direccion' (la semilla del vector, solo
-            para 'direccion') y, solo para 'neurona', 'x' e 'y' opcionales.
+            para 'direccion'), 'canales' (la lista de canales, solo para
+            'suma') y, solo para 'neurona', 'x' e 'y' opcionales.
 
     Returns:
         El objetivo, invocable sobre el tensor de activacion de la capa.
@@ -299,6 +307,8 @@ def construir_objetivo(ocfg: dict) -> Objetivo:
         return Capa()
     if tipo == "direccion":
         return Direccion(int(ocfg["direccion"]))
+    if tipo == "suma":
+        return Suma(tuple(Canal(int(z)) for z in ocfg["canales"]))
     z = int(ocfg["canal"])
     if tipo == "canal":
         return Canal(z)

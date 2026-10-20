@@ -10,6 +10,7 @@ que esa neurona busca.
     python -m src.interpretability.feature_viz --tipo logit --capa fc --canal 7
     python -m src.interpretability.feature_viz --tipo probabilidad --capa fc --canal 7
     python -m src.interpretability.feature_viz --tipo direccion --capa layer4.1.conv2 --direccion 3
+    python -m src.interpretability.feature_viz --tipo suma --capa layer4 --canales 12 40
 
 Tres detalles sin los cuales esto NO funciona, y que son casi toda la calidad
 del resultado:
@@ -334,6 +335,8 @@ def nombre_salida(ocfg: dict) -> str:
     partes = [capa, tipo]
     if tipo == "direccion":
         partes.append(f"s{ocfg['direccion']}")
+    elif tipo == "suma":
+        partes.append("+".join(str(z) for z in ocfg["canales"]))
     elif tipo != "capa":
         partes.append(str(ocfg["canal"]))
     if tipo == "neurona":
@@ -350,8 +353,9 @@ def main() -> int:
                     help="Channel (canal entero), Neuron (una posicion), "
                          "Layer (capa entera al cuadrado, DeepDream), "
                          "Class Logits (logit de la clase, solo en fc), "
-                         "Class Probability (softmax de la clase, solo en fc) o "
-                         "Direction (vector aleatorio del espacio de activaciones)")
+                         "Class Probability (softmax de la clase, solo en fc), "
+                         "Direction (vector aleatorio del espacio de activaciones) "
+                         "o suma de varios canales (--canales)")
     ap.add_argument("--capa", type=str, default=None,
                     help="modulo a maximizar, p.ej. 'fc' o 'layer3.1.conv2'")
     ap.add_argument("--canal", type=int, default=None,
@@ -363,6 +367,8 @@ def main() -> int:
                     help="columna del mapa; por defecto el centro")
     ap.add_argument("--direccion", type=int, default=None,
                     help="semilla del vector aleatorio (solo con --tipo direccion)")
+    ap.add_argument("--canales", type=int, nargs="+", default=None,
+                    help="canales a sumar (solo con --tipo suma)")
     ap.add_argument("--pasos", type=int, default=None, help="pasos de optimizacion")
     args = ap.parse_args()
 
@@ -375,7 +381,7 @@ def main() -> int:
     # Solo se sobreescribe lo que se pide por CLI; el resto lo manda el YAML.
     for clave, valor in (("tipo", args.tipo), ("capa", args.capa),
                          ("canal", args.canal), ("x", args.x), ("y", args.y),
-                         ("direccion", args.direccion)):
+                         ("direccion", args.direccion), ("canales", args.canales)):
         if valor is not None:
             cfg["objetivo"][clave] = valor
     if args.pasos is not None:

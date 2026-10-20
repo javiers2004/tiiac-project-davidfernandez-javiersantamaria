@@ -19,6 +19,7 @@ from src.interpretability.objetivos import (
     Logit,
     Neurona,
     Probabilidad,
+    Suma,
     construir_objetivo,
     inspeccionar_capa,
     resolver_modulo,
@@ -240,6 +241,16 @@ def test_capa_no_necesita_canal():
 
 def test_direccion_lee_su_semilla():
     assert construir_objetivo({"tipo": "direccion", "direccion": 4}) == Direccion(4)
+
+
+def test_suma_lee_la_lista_de_canales():
+    assert construir_objetivo({"tipo": "suma", "canales": [3, 8]}) == Suma((Canal(3), Canal(8)))
+
+
+def test_suma_es_la_suma_de_sus_canales():
+    act = torch.randn(1, 10, 4, 4)
+    suma = construir_objetivo({"tipo": "suma", "canales": [3, 8]})
+    assert torch.allclose(suma(act), Canal(3)(act) + Canal(8)(act))
 
 
 def test_logit_lee_la_clase_de_canal():

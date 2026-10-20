@@ -228,6 +228,12 @@ def test_el_nombre_de_la_direccion_es_su_semilla():
     assert a != c
 
 
+def test_el_nombre_de_la_suma_lleva_todos_los_canales():
+    """A+B y A solo no pueden pisarse el PNG."""
+    assert nombre_salida({"tipo": "suma", "capa": "layer4", "canales": [12, 40]}) \
+        == "layer4_suma_12+40"
+
+
 def test_la_misma_seed_da_la_misma_imagen():
     """Sin esto, dos ejecuciones dan visualizaciones distintas y no se puede
     comparar una neurona consigo misma entre commits.

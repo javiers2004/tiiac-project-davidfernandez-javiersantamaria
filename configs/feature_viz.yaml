@@ -27,6 +27,8 @@ objetivo:
   # De la seccion "The Interaction between Neurons":
   #   direccion -> Direction, v . layer_n[x, y, :] con v aleatorio de norma 1;
   #                ignora 'canal' y usa 'direccion' como semilla de v
+  #   suma      -> neuronas sumadas ("jointly optimized"): los Channel de
+  #                'canales' a la vez; ignora 'canal'
   tipo: canal
   capa: fc                # 'fc' = capa de salida. Tambien vale 'layer3.1.conv2'.
   canal: 0                # el indice z: la clase (0..1080) en fc, o el canal
@@ -36,6 +38,8 @@ objetivo:
   y: null
   # Solo para tipo 'direccion': cada semilla es una direccion distinta.
   direccion: 0
+  # Solo para tipo 'suma': los canales de 'capa' que se suman.
+  canales: [0, 1]
 
 imagen:
   tamano: 224
