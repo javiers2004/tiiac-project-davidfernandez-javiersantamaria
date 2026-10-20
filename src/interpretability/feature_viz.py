@@ -269,16 +269,16 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     # afectar a los objetivos de una imagen.
     if parametrizacion.lote < 2:
         peso_alin = 0.0
-    capa_alin = str(acfg["capa"]) if peso_alin else None
+    capas_alin = [str(c) for c in acfg["capas"]] if peso_alin else []
 
     # Los hooks capturan la salida de cada capa que hace falta: la del
-    # objetivo y, si hay alineacion, la de la alineacion (puede ser la misma).
+    # objetivo y, si hay alineacion, las suyas (puede incluir la misma).
     # Sirven igual para 'fc' (2D, N x clases) que para una conv (4D).
     capturado: dict[str, torch.Tensor] = {}
     asas = [
         resolver_modulo(modelo, c).register_forward_hook(
             lambda _m, _entrada, salida, c=c: capturado.__setitem__(c, salida))
-        for c in dict.fromkeys(filter(None, (capa, capa_alin)))
+        for c in dict.fromkeys([capa, *capas_alin])
     ]
 
     optimizador = torch.optim.Adam(parametrizacion.parameters(),
@@ -319,8 +319,8 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             if peso_l2:
                 perdida = perdida + peso_l2 * imagen.pow(2).mean()
             if peso_alin:
-                penal = alineacion(capturado[capa_alin], float(acfg["decaimiento"]),
-                                   int(acfg["alcance"]))
+                penal = sum(alineacion(capturado[c], float(acfg["decaimiento"]),
+                                       int(acfg["alcance"])) for c in capas_alin)
                 perdida = perdida + peso_alin * penal
                 metricas["viz/alineacion"] = penal.item()
 

@@ -329,7 +329,7 @@ def test_la_alineacion_acerca_las_imagenes_del_lote():
         cfg = copy.deepcopy(CFG)
         cfg["imagen"]["lote"] = 3
         cfg["optimizacion"]["pasos"] = 12
-        cfg["regularizacion"]["alineacion"] = {"peso": peso, "capa": "layer1",
+        cfg["regularizacion"]["alineacion"] = {"peso": peso, "capas": ["layer1"],
                                                "decaimiento": 2.0, "alcance": 4}
         imagenes, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
         return (imagenes[1:] - imagenes[:-1]).abs().mean().item()
@@ -343,7 +343,7 @@ def test_la_alineacion_no_tapa_una_unidad_muerta():
     cfg = copy.deepcopy(CFG)
     cfg["objetivo"] = {"tipo": "canal", "capa": "layer4", "canal": 0}
     cfg["imagen"]["lote"] = 2
-    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capa": "layer1",
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capas": ["layer1"],
                                            "decaimiento": 2.0, "alcance": 4}
     modelo = _modelo_congelado()
     modelo.layer4.register_forward_hook(lambda _m, _e, s: s * 0)
@@ -351,12 +351,29 @@ def test_la_alineacion_no_tapa_una_unidad_muerta():
         maximizar_activacion(cfg, modelo=modelo)
 
 
+def test_la_alineacion_suma_varias_capas(monkeypatch):
+    """lucid alinea en dos capas a la vez. Si solo se usara la primera de la
+    lista no habria error, solo una alineacion mas floja."""
+    import src.interpretability.feature_viz as fv
+    vistos = []
+    original = fv.alineacion
+    monkeypatch.setattr(fv, "alineacion",
+                        lambda act, d, a: vistos.append(act.shape[1]) or original(act, d, a))
+    cfg = copy.deepcopy(CFG)
+    cfg["imagen"]["lote"] = 2
+    cfg["optimizacion"]["pasos"] = 1
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capas": ["layer1", "layer2"],
+                                           "decaimiento": 2.0, "alcance": 4}
+    maximizar_activacion(cfg, modelo=_modelo_congelado())
+    assert vistos == [64, 128]      # canales de layer1 y de layer2
+
+
 def test_los_hooks_se_quitan_al_terminar():
     """Si quedase uno enganchado, la siguiente llamada con el mismo modelo
     (la app lo reutiliza) capturaria de mas y gastaria memoria."""
     cfg = copy.deepcopy(CFG)
     cfg["imagen"]["lote"] = 2
-    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capa": "layer1",
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capas": ["layer1"],
                                            "decaimiento": 2.0, "alcance": 4}
     modelo = _modelo_congelado()
     maximizar_activacion(cfg, modelo=modelo)

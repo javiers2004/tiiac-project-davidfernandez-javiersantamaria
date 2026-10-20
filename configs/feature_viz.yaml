@@ -79,9 +79,20 @@ regularizacion:
   # Solo actua con imagen.lote > 1: con una imagen ni se calcula.
   # peso 0 = desactivada.
   alineacion:
-    peso: 0.0
-    capa: layer2
-    decaimiento: 2.0      # la pareja (i, i+d) pesa 1 / decaimiento**d (lucid: 2)
+    # Elegido con un barrido sobre layer4 56 -> 233 (6 imagenes, 256 pasos):
+    #     peso    activacion extremos   diferencia entre vecinas (pixel)
+    #       0          100 %                 0.142
+    #      10          ~91 %                 0.075
+    #     100          ~71 %                 0.026  (la fila ya no cambia)
+    #    1000          colapsa               0.014
+    # lucid usa 0.1, pero suma el objetivo sobre el lote en vez de promediarlo
+    # y sobre otro modelo: los pesos no son trasladables.
+    peso: 10.0
+    # Capas en las que se compara, mas bajas que la del objetivo. lucid usa
+    # dos (mixed3b y mixed4a para interpolar en mixed4a).
+    capas: [layer2, layer3]
+    decaimiento: 5.0      # la pareja (i, i+d) pesa 1 / decaimiento**d. lucid:
+                          # 2 en alignment(), 5 en su notebook de interpolacion
     alcance: 4            # d va de 1 a alcance (lucid: 4)
 
 robustez:
