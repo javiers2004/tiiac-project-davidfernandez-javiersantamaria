@@ -368,6 +368,32 @@ def test_la_alineacion_suma_varias_capas(monkeypatch):
     assert vistos == [64, 128]      # canales de layer1 y de layer2
 
 
+def _con_canal_muerto(modelo, z):
+    """layer4 con el canal z anulado pero aun en el grafo, como un ReLU."""
+    mascara = torch.ones(1, 512, 1, 1)
+    mascara[0, z] = 0
+    modelo.layer4.register_forward_hook(lambda _m, _e, s: s * mascara)
+    return modelo
+
+
+def test_una_neurona_muerta_dentro_de_una_suma_se_detecta():
+    """El canal 1 esta vivo y tapa al 0 si solo se mira la suma."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "suma", "capa": "layer4", "canales": [0, 1]}
+    with pytest.raises(UnidadMuerta, match=r"canal\[0\]"):
+        maximizar_activacion(cfg, modelo=_con_canal_muerto(_modelo_congelado(), 0))
+
+
+def test_un_extremo_muerto_de_la_interpolacion_se_detecta():
+    """Sin esto la primera imagen de la fila se quedaria en el ruido inicial
+    y la interpolacion pareceria correcta."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer4", "canales": [0, 1]}
+    cfg["imagen"]["lote"] = 3
+    with pytest.raises(UnidadMuerta, match="primera imagen"):
+        maximizar_activacion(cfg, modelo=_con_canal_muerto(_modelo_congelado(), 0))
+
+
 def test_los_hooks_se_quitan_al_terminar():
     """Si quedase uno enganchado, la siguiente llamada con el mismo modelo
     (la app lo reutiliza) capturaria de mas y gastaria memoria."""

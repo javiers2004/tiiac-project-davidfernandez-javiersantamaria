@@ -308,9 +308,14 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             # mitad de las posiciones centrales de layer4 estan asi al
             # arrancar, asi que conviene detectarlo en el primer paso. Se mira
             # el gradiente del OBJETIVO solo: las penalizaciones tambien mueven
-            # la imagen y taparian una unidad muerta.
+            # la imagen y taparian una unidad muerta. Y en una Suma o una
+            # Interpolacion, cada parte por separado, por el mismo motivo.
             if paso == 0:
-                _comprobar_gradiente(parametrizacion, activacion, objetivo, capa)
+                partes = (objetivo.componentes(capturado[capa])
+                          if hasattr(objetivo, "componentes")
+                          else [(str(objetivo), activacion)])
+                for nombre, valor in partes:
+                    _comprobar_gradiente(parametrizacion, valor, nombre, capa)
 
             perdida = -activacion
             metricas = {"viz/activacion": activacion.item()}

@@ -276,6 +276,14 @@ class Suma:
             raise ValueError("una Suma necesita al menos un objetivo")
         return sum(parte(act) for parte in self.partes)
 
+    def componentes(self, act: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
+        """Cada sumando por separado, para comprobar que ninguno esta muerto.
+
+        Si uno lo esta, la suma sigue teniendo gradiente por los demas y el
+        fallo no se veria: la imagen ignoraria esa neurona sin avisar.
+        """
+        return [(str(parte), parte(act)) for parte in self.partes]
+
     def __str__(self) -> str:
         return " + ".join(str(parte) for parte in self.partes)
 
@@ -323,6 +331,16 @@ class Interpolacion:
         a = act[:, self.a].reshape(n, -1).mean(dim=1)
         b = act[:, self.b].reshape(n, -1).mean(dim=1)
         return ((1 - w) * a + w * b).mean()
+
+    def componentes(self, act: torch.Tensor) -> list[tuple[str, torch.Tensor]]:
+        """a en la primera imagen y b en la ultima, por separado.
+
+        La primera imagen solo puntua por a. Si a esta muerto, b sigue dando
+        gradiente al objetivo entero y nadie avisaria de que esa imagen no
+        recibe nada de el.
+        """
+        return [(f"canal[{self.a}] en la primera imagen", act[:1, self.a].mean()),
+                (f"canal[{self.b}] en la ultima imagen", act[-1:, self.b].mean())]
 
     def __str__(self) -> str:
         return f"interpolacion[{self.a} -> {self.b}]"

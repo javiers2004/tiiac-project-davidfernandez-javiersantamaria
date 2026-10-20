@@ -241,6 +241,13 @@ def test_la_interpolacion_de_un_canal_consigo_mismo_es_canal():
     assert torch.allclose(Interpolacion(2, 2)(act), Canal(2)(act))
 
 
+def test_los_componentes_de_la_interpolacion_son_sus_extremos():
+    act = torch.randn(3, 4, 2, 2)
+    (_, a), (_, b) = Interpolacion(1, 2).componentes(act)
+    assert torch.allclose(a, act[0, 1].mean())
+    assert torch.allclose(b, act[2, 2].mean())
+
+
 def test_la_interpolacion_necesita_un_lote():
     with pytest.raises(ValueError, match="imagen.lote"):
         Interpolacion(0, 1)(torch.randn(1, 4, 3, 3))
