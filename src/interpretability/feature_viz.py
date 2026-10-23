@@ -151,6 +151,53 @@ class ImagenFourier(nn.Module):
         return torch.sigmoid(imagen)
 
 
+class ImagenPixel(nn.Module):
+    """Imagen parametrizada por sus pixeles, sin preconditioning.
+
+    Es el interruptor "Decorrelated Space" del articulo en posicion apagada:
+    descenso de gradiente en el espacio de pixeles, sin base de Fourier y sin
+    decorrelacion de color. Existe para poder REPRODUCIR la comparacion del
+    articulo, no para usarla: converge a ruido adversarial de alta frecuencia
+    que maximiza la activacion sin parecerse a nada.
+
+    Equivale a param.pixel_image de lucid, con la misma sd por defecto.
+    """
+
+    def __init__(self, alto: int, ancho: int, sd: float = 0.01,
+                 generador: torch.Generator | None = None, lote: int = 1):
+        super().__init__()
+        self.alto, self.ancho, self.lote = alto, ancho, lote
+        ruido = torch.randn(lote, 3, alto, ancho, generator=generador)
+        self.pixeles = nn.Parameter(ruido * sd)
+
+    def forward(self) -> torch.Tensor:
+        """Devuelve las imagenes RGB (lote, 3, H, W) en [0, 1]."""
+        # Misma sigmoide que la version de Fourier, para que la unica
+        # diferencia entre ambas sea la parametrizacion.
+        return torch.sigmoid(self.pixeles)
+
+
+def construir_parametrizacion(icfg: dict, generador: torch.Generator
+                              ) -> nn.Module:
+    """Crea la parametrizacion de la imagen segun icfg['parametrizacion'].
+
+    'fourier' es el preconditioning del articulo y el valor por defecto;
+    'pixel' lo desactiva.
+    """
+    tam, lote = int(icfg["tamano"]), int(icfg.get("lote", 1))
+    sd = float(icfg["sd_inicial"])
+    cual = str(icfg.get("parametrizacion", "fourier"))
+
+    if cual == "pixel":
+        return ImagenPixel(tam, tam, sd=sd, generador=generador, lote=lote)
+    if cual != "fourier":
+        raise ValueError(f"parametrizacion desconocida: '{cual}'. "
+                         f"Opciones: fourier, pixel")
+    return ImagenFourier(tam, tam, decay=float(icfg["decay_power"]), sd=sd,
+                         generador=generador, lote=lote,
+                         compartida=icfg.get("compartida"))
+
+
 def aplicar_robustez(imagen: torch.Tensor, rcfg: dict,
                      generador: torch.Generator) -> torch.Tensor:
     """Aplica jitter, escala y rotacion aleatorios a la imagen.
@@ -253,15 +300,15 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     # no se tocan desde aqui.
     generador = torch.Generator().manual_seed(int(cfg["experimento"]["seed"]))
 
-    tam = int(icfg["tamano"])
-    parametrizacion = ImagenFourier(tam, tam, decay=float(icfg["decay_power"]),
-                                    sd=float(icfg["sd_inicial"]),
-                                    generador=generador,
-                                    lote=int(icfg.get("lote", 1)),
-                                    compartida=icfg.get("compartida")).to(dispositivo)
+    parametrizacion = construir_parametrizacion(icfg, generador).to(dispositivo)
 
     rcfg, gcfg = cfg["robustez"], cfg["regularizacion"]
+    # Interruptor "Transformation Robustness" del articulo. Apagarlo no es lo
+    # mismo que poner los valores a cero: aqui se salta la funcion entera.
+    robustez_activa = bool(rcfg.get("activa", True))
     peso_tv, peso_l2 = float(gcfg["tv"]), float(gcfg["l2"])
+    peso_l1 = float(gcfg.get("l1", 0.0))
+    peso_blur = float(gcfg.get("blur", 0.0))
     acfg = gcfg.get("alineacion") or {}
     peso_alin = float(acfg.get("peso", 0.0))
     # La alineacion compara imagenes del lote entre si: con una sola seria
@@ -294,7 +341,8 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             optimizador.zero_grad(set_to_none=True)
 
             imagen = parametrizacion()
-            entrada = aplicar_robustez(imagen, rcfg, generador)
+            entrada = (aplicar_robustez(imagen, rcfg, generador)
+                       if robustez_activa else imagen)
             modelo((entrada - media) / desv)
 
             # El objetivo decide la reduccion: que parte de la capa se toma
@@ -319,8 +367,15 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
 
             perdida = -activacion
             metricas = {"viz/activacion": activacion.item()}
+            # Las tres familias de "Three Families of Regularization": los
+            # penalizadores de frecuencia (L1, variacion total, desenfoque)
+            # aqui, y la robustez a transformaciones mas arriba.
+            if peso_l1:
+                perdida = perdida + peso_l1 * _norma_l1(imagen)
             if peso_tv:
                 perdida = perdida + peso_tv * _variacion_total(imagen)
+            if peso_blur:
+                perdida = perdida + peso_blur * _penalizacion_desenfoque(imagen)
             if peso_l2:
                 perdida = perdida + peso_l2 * imagen.pow(2).mean()
             if peso_alin:
@@ -358,10 +413,16 @@ class UnidadMuerta(RuntimeError):
 
 def _comprobar_gradiente(parametrizacion: nn.Module, activacion: torch.Tensor,
                          objetivo, capa: str) -> None:
-    """Falla pronto si el objetivo no mueve la imagen."""
-    grad, = torch.autograd.grad(activacion, parametrizacion.espectro,
+    """Falla pronto si el objetivo no mueve la imagen.
+
+    Se piden los gradientes de TODOS los parametros de la parametrizacion, no
+    de uno concreto: el espectro de Fourier y los pixeles son tensores
+    distintos, y la de Fourier ademas tiene la parte compartida del lote.
+    """
+    tensores = list(parametrizacion.parameters())
+    grads = torch.autograd.grad(activacion, tensores,
                                 retain_graph=True, allow_unused=True)
-    if grad is not None and torch.any(grad != 0):
+    if any(g is not None and torch.any(g != 0) for g in grads):
         return
     raise UnidadMuerta(
         f"{objetivo} en '{capa}' no propaga gradiente: la unidad esta muerta "
@@ -390,6 +451,43 @@ def alineacion(act: torch.Tensor, decaimiento: float, alcance: int) -> torch.Ten
         for i in range(act.shape[0] - d):
             total = total + (act[i] - act[i + d]).pow(2).mean() / decaimiento ** d
     return total
+
+
+def _norma_l1(x: torch.Tensor) -> torch.Tensor:
+    """Norma L1 de la imagen, el primero de los penalizadores de frecuencia.
+
+    lucid usa reduce_sum; aqui se promedia, igual que tv y l2, para que los
+    tres pesos esten en la misma escala entre si. La consecuencia es que los
+    coeficientes del articulo (L1 -0.05, TV -0.25) NO se pueden copiar tal
+    cual: alli van sobre sumas de 150.528 elementos a 224x224.
+    """
+    return x.abs().mean()
+
+
+def _desenfocar(x: torch.Tensor) -> torch.Tensor:
+    """Desenfoque 3x3 de lucid (_tf_blur), normalizado en los bordes.
+
+    El nucleo es 0.5 en todas las casillas y 1.0 en el centro, y se divide
+    por el mismo desenfoque aplicado a unos, de modo que en los bordes los
+    pesos se reparten solo entre los vecinos que existen.
+    """
+    nucleo = torch.full((1, 1, 3, 3), 0.5, dtype=x.dtype, device=x.device)
+    nucleo[0, 0, 1, 1] = 1.0
+    nucleo = nucleo.expand(x.shape[1], 1, 3, 3)
+    difuminar = lambda t: F.conv2d(t, nucleo, padding=1, groups=t.shape[1])
+    return difuminar(x) / difuminar(torch.ones_like(x))
+
+
+def _penalizacion_desenfoque(x: torch.Tensor) -> torch.Tensor:
+    """Penaliza la diferencia con la version desenfocada de la imagen.
+
+    Es blur_input_each_step de lucid: minimizarla equivale a desenfocar la
+    imagen un poco en cada paso, que es como el articulo describe esta
+    familia. El termino desenfocado va detached, igual que el stop_gradient
+    de lucid: el gradiente solo debe empujar la imagen hacia el desenfoque,
+    no mover el desenfoque hacia la imagen.
+    """
+    return 0.5 * (x - _desenfocar(x).detach()).pow(2).mean()
 
 
 def _variacion_total(x: torch.Tensor) -> torch.Tensor:
@@ -461,6 +559,21 @@ def main() -> int:
                     help="imagenes que se optimizan a la vez; la interpolacion "
                          "necesita 2 o mas")
     ap.add_argument("--pasos", type=int, default=None, help="pasos de optimizacion")
+    ap.add_argument("--learning-rate", type=float, default=None,
+                    help="tasa de aprendizaje de Adam")
+    # Los controles de las figuras interactivas del articulo.
+    ap.add_argument("--parametrizacion", choices=["fourier", "pixel"], default=None,
+                    help="'pixel' apaga el preconditioning (Decorrelated Space)")
+    ap.add_argument("--sin-robustez", action="store_true",
+                    help="apaga la robustez a transformaciones")
+    ap.add_argument("--l1", type=float, default=None, help="peso del penalizador L1")
+    ap.add_argument("--tv", type=float, default=None, help="peso de la variacion total")
+    ap.add_argument("--blur", type=float, default=None, help="peso del desenfoque")
+    ap.add_argument("--jitter", type=int, default=None, help="desplazamiento maximo")
+    ap.add_argument("--escalas", type=float, nargs="+", default=None,
+                    help="factores de escala entre los que elegir")
+    ap.add_argument("--rotaciones", type=float, nargs="+", default=None,
+                    help="angulos en grados entre los que elegir")
     args = ap.parse_args()
 
     ruta = args.config if args.config.is_absolute() else RAIZ / args.config
@@ -477,8 +590,23 @@ def main() -> int:
             cfg["objetivo"][clave] = valor
     if args.pasos is not None:
         cfg["optimizacion"]["pasos"] = args.pasos
+    if args.learning_rate is not None:
+        cfg["optimizacion"]["learning_rate"] = args.learning_rate
     if args.lote is not None:
         cfg["imagen"]["lote"] = args.lote
+    if args.parametrizacion is not None:
+        cfg["imagen"]["parametrizacion"] = args.parametrizacion
+    for clave, valor in (("l1", args.l1), ("tv", args.tv), ("blur", args.blur)):
+        if valor is not None:
+            cfg["regularizacion"][clave] = valor
+    if args.sin_robustez:
+        cfg["robustez"]["activa"] = False
+    if args.jitter is not None:
+        cfg["robustez"]["jitter"] = args.jitter
+    if args.escalas is not None:
+        cfg["robustez"]["escalas"] = args.escalas
+    if args.rotaciones is not None:
+        cfg["robustez"]["rotaciones"] = args.rotaciones
 
     fijar_seed(int(cfg["experimento"]["seed"]))
     run = abrir_run(cfg)
