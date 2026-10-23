@@ -46,6 +46,12 @@ objetivo:
 
 imagen:
   tamano: 224
+  # Interruptor "Decorrelated Space" del articulo:
+  #   fourier -> espectro escalado por 1/f + decorrelacion de color. Es el
+  #              preconditioning, y lo que uso el articulo.
+  #   pixel   -> descenso directo sobre los pixeles, sin preconditioning.
+  #              Solo para reproducir la comparacion: da ruido adversarial.
+  parametrizacion: fourier
   # Cuantas imagenes se optimizan a la vez. 1 para todos los objetivos salvo
   # la interpolacion, que reparte sus pesos a lo largo del lote.
   lote: 1
@@ -69,10 +75,19 @@ optimizacion:
   pasos: 256
 
 regularizacion:
-  # Con parametrizacion FFT + robustez casi nunca hacen falta. Se dejan a 0
-  # y se suben solo si la imagen sale con ruido residual.
-  tv: 0.0
-  l2: 0.0
+  # Los tres penalizadores de frecuencia de "Three Families of
+  # Regularization". Con parametrizacion FFT + robustez casi nunca hacen
+  # falta: se dejan a 0 y se suben solo si queda ruido residual, o para
+  # reproducir la figura de esa seccion del articulo.
+  #
+  # OJO con los coeficientes del articulo (L1 -0.05, TV -0.25, Blur -1): van
+  # sobre SUMAS de 150.528 elementos y aqui los tres terminos se promedian,
+  # asi que no se pueden copiar tal cual. El signo tambien cambia: alli se
+  # maximiza y restan, aqui se minimiza y suman.
+  l1: 0.0               # media de |imagen|
+  tv: 0.0               # variacion total
+  blur: 0.0             # distancia a la imagen desenfocada (blur_input_each_step)
+  l2: 0.0               # no es del articulo; se conserva por compatibilidad
   # Alineacion, de la interpolacion de "The Interaction between Neurons":
   # penaliza que imagenes vecinas del lote activen distinto una capa BAJA,
   # para que el mismo objeto quede en el mismo sitio a lo largo de la fila.
@@ -97,6 +112,9 @@ regularizacion:
     alcance: 4            # d va de 1 a alcance (lucid: 4)
 
 robustez:
+  # Interruptor "Transformation Robustness" del articulo. En false se salta
+  # la funcion entera, que no es lo mismo que poner los valores a cero.
+  activa: true
   # Sin esto la optimizacion produce ruido adversarial en vez de patrones.
   #
   # Valores de la nota al pie 9 del articulo, que es lo que se uso para las

@@ -479,3 +479,88 @@ def test_la_misma_seed_da_la_misma_imagen():
     a, _ = maximizar_activacion(CFG, modelo=modelo)
     b, _ = maximizar_activacion(CFG, modelo=modelo)
     assert torch.allclose(a, b)
+
+
+# --- Los controles de las figuras del articulo ---------------------------
+#
+# Hasta ahora ninguna de estas ramas se ejecutaba en los tests: la
+# configuracion deja los regularizadores a 0, asi que `if peso_tv:` y sus
+# hermanos nunca entraban. Un peso roto no se habria notado hasta que
+# alguien moviera el deslizador en la aplicacion.
+
+def _aspereza(img):
+    """Cuanto cambia la imagen entre pixeles vecinos.
+
+    Es lo que los penalizadores de frecuencia tienen que bajar, asi que
+    sirve para comprobar que de verdad hacen algo.
+    """
+    return float((img[..., 1:, :] - img[..., :-1, :]).abs().mean()
+                 + (img[..., :, 1:] - img[..., :, :-1]).abs().mean())
+
+
+def _con(**cambios):
+    cfg = copy.deepcopy(CFG)
+    cfg["optimizacion"]["pasos"] = 24
+    for ruta, valor in cambios.items():
+        seccion, clave = ruta.split(".")
+        cfg[seccion][clave] = valor
+    return cfg
+
+
+@pytest.mark.parametrize("peso", [{"regularizacion.l1": 5.0},
+                                  {"regularizacion.tv": 5.0},
+                                  {"regularizacion.blur": 50.0}])
+def test_cada_penalizador_de_frecuencia_cambia_el_resultado(peso):
+    """Un peso que no cambia nada es un deslizador roto en la interfaz."""
+    modelo = _modelo_congelado()
+    base, _ = maximizar_activacion(_con(), modelo=modelo)
+    otra, _ = maximizar_activacion(_con(**peso), modelo=modelo)
+    assert not torch.allclose(base, otra)
+
+
+def test_la_variacion_total_suaviza():
+    """De los tres penalizadores, el efecto de TV es el que se puede afirmar
+    con seguridad: su definicion ES la aspereza que mide _aspereza."""
+    modelo = _modelo_congelado()
+    base, _ = maximizar_activacion(_con(), modelo=modelo)
+    suave, _ = maximizar_activacion(_con(**{"regularizacion.tv": 20.0}),
+                                    modelo=modelo)
+    assert _aspereza(suave) < _aspereza(base)
+
+
+def test_la_parametrizacion_por_pixeles_funciona():
+    """El interruptor 'Decorrelated Space' en apagado. Sin esto no se puede
+    reproducir la comparacion de la seccion de preconditioning."""
+    imagen, historial = maximizar_activacion(
+        _con(**{"imagen.parametrizacion": "pixel"}), modelo=_modelo_congelado())
+    assert imagen.shape == (1, 3, TAM, TAM)
+    assert imagen.min() >= 0.0 and imagen.max() <= 1.0
+    assert sum(historial[-4:]) / 4 > sum(historial[:4]) / 4
+
+
+def test_una_parametrizacion_desconocida_falla_y_dice_las_opciones():
+    with pytest.raises(ValueError, match="fourier, pixel"):
+        maximizar_activacion(_con(**{"imagen.parametrizacion": "wavelet"}),
+                             modelo=_modelo_congelado())
+
+
+def test_apagar_la_robustez_cambia_el_resultado():
+    """El interruptor 'Transformation Robustness'. Apagarlo salta la funcion
+    entera, que no es lo mismo que poner los valores a cero."""
+    modelo = _modelo_congelado()
+    base, _ = maximizar_activacion(_con(), modelo=modelo)
+    cruda, _ = maximizar_activacion(_con(**{"robustez.activa": False}),
+                                    modelo=modelo)
+    assert not torch.allclose(base, cruda)
+
+
+def test_la_deteccion_de_unidad_muerta_vale_para_las_dos_parametrizaciones():
+    """_comprobar_gradiente miraba un tensor llamado 'espectro', que la
+    parametrizacion por pixeles no tiene."""
+    for cual in ("fourier", "pixel"):
+        cfg = _con(**{"imagen.parametrizacion": cual})
+        cfg["objetivo"] = {"tipo": "neurona", "capa": "layer4", "canal": 0}
+        modelo = _modelo_congelado()
+        modelo.layer4.register_forward_hook(lambda _m, _e, s: s * 0)
+        with pytest.raises(UnidadMuerta):
+            maximizar_activacion(cfg, modelo=modelo)
