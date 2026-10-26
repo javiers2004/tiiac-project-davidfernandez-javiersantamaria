@@ -12,6 +12,7 @@ que esa neurona busca.
     python -m src.interpretability.feature_viz --tipo direccion --capa layer4.1.conv2 --direccion 3
     python -m src.interpretability.feature_viz --tipo suma --capa layer4 --canales 12 40
     python -m src.interpretability.feature_viz --tipo interpolacion --capa layer4 --canales 12 40 --lote 6
+    python -m src.interpretability.feature_viz --capa layer4 --canal 443 --lote 4 --diversidad
 
 Tres detalles sin los cuales esto NO funciona, y que son casi toda la calidad
 del resultado:
@@ -55,6 +56,7 @@ sys.path.insert(0, str(RAIZ))
 
 from src.interpretability.objetivos import (        # noqa: E402
     OBJETIVOS,
+    Interpolacion,
     construir_objetivo,
     inspeccionar_capa,
     resolver_modulo,
@@ -300,9 +302,26 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     # no se tocan desde aqui.
     generador = torch.Generator().manual_seed(int(cfg["experimento"]["seed"]))
 
+    rcfg, gcfg = cfg["robustez"], cfg["regularizacion"]
+    # Diversidad (seccion "Diversity"): apagada salvo que se pida. Compara las
+    # imagenes del lote entre si, asi que con una sola ni se calcula.
+    dcfg = gcfg.get("diversidad") or {}
+    peso_div = float(dcfg.get("peso", 0.0)) if int(icfg.get("lote", 1)) > 1 else 0.0
+    if peso_div:
+        if isinstance(objetivo, Interpolacion):
+            raise ValueError(
+                "la diversidad separa las imagenes del lote y la interpolacion "
+                "las quiere alineadas; no se combinan en la misma ejecucion")
+        # La alineacion y la parte compartida juntan las imagenes del lote,
+        # justo lo contrario. Se apagan SOLO en esta ejecucion; el YAML no se
+        # toca y la interpolacion las sigue teniendo.
+        print("diversidad activa: alineacion y parte compartida apagadas en "
+              "esta ejecucion")
+        icfg = {**icfg, "compartida": []}
+    capa_div = str(dcfg.get("capa") or capa) if peso_div else None
+
     parametrizacion = construir_parametrizacion(icfg, generador).to(dispositivo)
 
-    rcfg, gcfg = cfg["robustez"], cfg["regularizacion"]
     # Interruptor "Transformation Robustness" del articulo. Apagarlo no es lo
     # mismo que poner los valores a cero: aqui se salta la funcion entera.
     robustez_activa = bool(rcfg.get("activa", True))
@@ -314,18 +333,19 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     # La alineacion compara imagenes del lote entre si: con una sola seria
     # cero, asi que ni se calcula. Por eso puede tener peso en el YAML sin
     # afectar a los objetivos de una imagen.
-    if parametrizacion.lote < 2:
+    if parametrizacion.lote < 2 or peso_div:
         peso_alin = 0.0
     capas_alin = [str(c) for c in acfg["capas"]] if peso_alin else []
 
     # Los hooks capturan la salida de cada capa que hace falta: la del
-    # objetivo y, si hay alineacion, las suyas (puede incluir la misma).
+    # objetivo y, si hay alineacion o diversidad, las suyas (pueden incluir
+    # la misma).
     # Sirven igual para 'fc' (2D, N x clases) que para una conv (4D).
     capturado: dict[str, torch.Tensor] = {}
     asas = [
         resolver_modulo(modelo, c).register_forward_hook(
             lambda _m, _entrada, salida, c=c: capturado.__setitem__(c, salida))
-        for c in dict.fromkeys([capa, *capas_alin])
+        for c in dict.fromkeys(filter(None, [capa, *capas_alin, capa_div]))
     ]
 
     optimizador = torch.optim.Adam(parametrizacion.parameters(),
@@ -383,6 +403,10 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
                                        int(acfg["alcance"])) for c in capas_alin)
                 perdida = perdida + peso_alin * penal
                 metricas["viz/alineacion"] = penal.item()
+            if peso_div:
+                similitud = diversidad(capturado[capa_div])
+                perdida = perdida + peso_div * similitud
+                metricas["viz/diversidad"] = similitud.item()
 
             perdida.backward()
 
@@ -431,6 +455,39 @@ def _comprobar_gradiente(parametrizacion: nn.Module, activacion: torch.Tensor,
         f"del bloque (p.ej. '{capa}.1.conv2' en lugar de '{capa}'), elegir "
         f"otro canal, o mover (x, y) a otra posicion."
     )
+
+
+def diversidad(act: torch.Tensor) -> torch.Tensor:
+    """Cuanto se parecen entre si las imagenes del lote, por su "estilo".
+
+    Es el "diversity term" de la seccion "Diversity" del articulo, sacado de
+    la transferencia de estilo. Para cada imagen se calcula la matriz de Gram
+    de los canales de la capa,
+
+        G[i, j] = sum_{x, y} act[i, x, y] * act[j, x, y]
+
+    que dice que canales se encienden JUNTOS pero no donde. Luego se suma la
+    similitud coseno entre las Gram de cada par de imagenes distintas y se
+    divide por el tamano del lote. Va de 0 (todas distintas) a lote - 1
+    (todas iguales).
+
+    Devuelve una penalizacion que se SUMA a la perdida: minimizarla separa
+    las imagenes. El articulo escribe el termino con el signo cambiado porque
+    alli se maximiza.
+
+    Referencia: lucid.optvis.objectives.diversity.
+    """
+    if act.dim() != 4:
+        raise ValueError(
+            f"la diversidad compara matrices de Gram y necesita una capa con "
+            f"extension espacial (N,C,H,W); esta da {tuple(act.shape)}. Con un "
+            f"objetivo en fc, pon regularizacion.diversidad.capa (p.ej. layer4).")
+    n = act.shape[0]
+    plano = act.reshape(n, act.shape[1], -1)                  # (N, C, H*W)
+    gram = (plano @ plano.transpose(1, 2)).reshape(n, -1)     # (N, C*C)
+    gram = F.normalize(gram, dim=1, eps=1e-10)
+    similitud = gram @ gram.T                                 # (N, N) cosenos
+    return (similitud.sum() - similitud.diagonal().sum()) / n
 
 
 def alineacion(act: torch.Tensor, decaimiento: float, alcance: int) -> torch.Tensor:
@@ -558,6 +615,14 @@ def main() -> int:
     ap.add_argument("--lote", type=int, default=None,
                     help="imagenes que se optimizan a la vez; la interpolacion "
                          "necesita 2 o mas")
+    ap.add_argument("--diversidad", nargs="?", const="sugerido", default=None,
+                    metavar="PESO",
+                    help="activa el termino de diversidad (necesita --lote 2 o "
+                         "mas); sin valor usa regularizacion.diversidad."
+                         "peso_sugerido del YAML")
+    ap.add_argument("--capa-diversidad", type=str, default=None,
+                    help="capa donde se comparan las imagenes; por defecto la "
+                         "del objetivo. Con objetivos en fc, una conv (layer4)")
     ap.add_argument("--pasos", type=int, default=None, help="pasos de optimizacion")
     ap.add_argument("--learning-rate", type=float, default=None,
                     help="tasa de aprendizaje de Adam")
@@ -594,6 +659,12 @@ def main() -> int:
         cfg["optimizacion"]["learning_rate"] = args.learning_rate
     if args.lote is not None:
         cfg["imagen"]["lote"] = args.lote
+    if args.diversidad is not None:
+        dcfg = cfg["regularizacion"].setdefault("diversidad", {})
+        dcfg["peso"] = float(dcfg["peso_sugerido"] if args.diversidad == "sugerido"
+                             else args.diversidad)
+    if args.capa_diversidad is not None:
+        cfg["regularizacion"].setdefault("diversidad", {})["capa"] = args.capa_diversidad
     if args.parametrizacion is not None:
         cfg["imagen"]["parametrizacion"] = args.parametrizacion
     for clave, valor in (("l1", args.l1), ("tv", args.tv), ("blur", args.blur)):
@@ -615,7 +686,12 @@ def main() -> int:
 
     destino = RAIZ / cfg["salida"]["directorio"]
     destino.mkdir(parents=True, exist_ok=True)
-    fichero = destino / (nombre_salida(cfg["objetivo"]) + ".png")
+    nombre = nombre_salida(cfg["objetivo"])
+    # Con diversidad sale otra cosa que sin ella: no puede pisar ese PNG.
+    if float((cfg["regularizacion"].get("diversidad") or {}).get("peso", 0.0)) \
+            and int(cfg["imagen"].get("lote", 1)) > 1:
+        nombre += "_diversidad"
+    fichero = destino / (nombre + ".png")
     # Un lote se guarda como UNA fila: es como se lee una interpolacion.
     save_image(imagen, fichero, nrow=imagen.shape[0])
 

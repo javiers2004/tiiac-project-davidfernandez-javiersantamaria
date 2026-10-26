@@ -20,6 +20,7 @@ from src.interpretability.feature_viz import (
     UnidadMuerta,
     alineacion,
     aplicar_robustez,
+    diversidad,
     maximizar_activacion,
     nombre_salida,
 )
@@ -564,3 +565,149 @@ def test_la_deteccion_de_unidad_muerta_vale_para_las_dos_parametrizaciones():
         modelo.layer4.register_forward_hook(lambda _m, _e, s: s * 0)
         with pytest.raises(UnidadMuerta):
             maximizar_activacion(cfg, modelo=modelo)
+
+
+# --- Diversidad ------------------------------------------------------------
+
+class _Run:
+    """Sustituto de un run de W&B que guarda lo que se registra."""
+
+    def __init__(self):
+        self.metricas = []
+
+    def log(self, m, step=None):
+        self.metricas.append(m)
+
+
+def _cfg_diversidad(peso, lote=3, pasos=4):
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "canal", "capa": "layer3", "canal": 1}
+    cfg["imagen"]["lote"] = lote
+    cfg["optimizacion"]["pasos"] = pasos
+    cfg["regularizacion"]["diversidad"] = {"peso": peso, "capa": None}
+    return cfg
+
+
+def test_la_diversidad_de_un_lote_igual_es_maxima():
+    """Tres imagenes identicas: cada par tiene coseno 1, y hay 3*2 pares
+    ordenados entre 3 imagenes, asi que da 6 / 3 = 2 = lote - 1."""
+    act = torch.rand(1, 4, 5, 5).repeat(3, 1, 1, 1)
+    assert diversidad(act).item() == pytest.approx(2.0)
+
+
+def test_la_diversidad_de_canales_disjuntos_es_cero():
+    """Si cada imagen enciende canales distintos, sus Gram no comparten nada."""
+    act = torch.zeros(2, 2, 3, 3)
+    act[0, 0] = 1.0
+    act[1, 1] = 1.0
+    assert diversidad(act).item() == pytest.approx(0.0)
+
+
+def test_la_diversidad_no_mira_donde_estan_las_cosas():
+    """La Gram suma sobre posiciones: la misma imagen desplazada tiene el
+    mismo "estilo". Es la idea que el articulo toma de la transferencia de
+    estilo, y lo que la distingue de comparar pixeles."""
+    a = torch.rand(1, 4, 6, 6)
+    desplazada = torch.roll(a, shifts=(2, 3), dims=(2, 3))
+    assert diversidad(torch.cat([a, desplazada])).item() == pytest.approx(1.0)
+
+
+def test_la_diversidad_no_depende_de_la_escala():
+    """Es una similitud coseno: activar mas fuerte no cuenta como distinto."""
+    act = torch.rand(3, 4, 5, 5)
+    assert torch.allclose(diversidad(act), diversidad(act * 7))
+
+
+def test_la_diversidad_en_fc_falla_con_mensaje_util():
+    with pytest.raises(ValueError, match="diversidad.capa"):
+        diversidad(torch.randn(3, 10))
+
+
+def test_la_diversidad_apagada_no_cambia_nada():
+    """Lo que pidio el equipo: es algo que se PUEDE hacer, no un cambio en
+    lo que ya habia. Con peso 0, lo mismo que sin la clave."""
+    modelo = _modelo_congelado()
+    cfg = _cfg_diversidad(0.0)
+    sin_clave = copy.deepcopy(cfg)
+    del sin_clave["regularizacion"]["diversidad"]
+    a, _ = maximizar_activacion(cfg, modelo=modelo)
+    b, _ = maximizar_activacion(sin_clave, modelo=modelo)
+    assert torch.equal(a, b)
+
+
+def test_la_diversidad_viene_apagada_en_el_yaml():
+    from src.interpretability.feature_viz import RAIZ, cargar_config
+    cfg = cargar_config(RAIZ / "configs" / "feature_viz.yaml")
+    assert cfg["regularizacion"]["diversidad"]["peso"] == 0.0
+
+
+def test_la_diversidad_con_una_imagen_no_hace_nada():
+    modelo = _modelo_congelado()
+    a, _ = maximizar_activacion(_cfg_diversidad(1000.0, lote=1), modelo=modelo)
+    b, _ = maximizar_activacion(_cfg_diversidad(0.0, lote=1), modelo=modelo)
+    assert torch.equal(a, b)
+
+
+def test_la_diversidad_separa_las_imagenes():
+    """El efecto que se busca: con el termino, las imagenes del lote acaban
+    con Gram menos parecidas que sin el (partiendo del mismo ruido)."""
+    def similitud_final(peso):
+        modelo = _modelo_congelado()
+        imagenes, _ = maximizar_activacion(_cfg_diversidad(peso, pasos=12), modelo=modelo)
+        capturado = {}
+        modelo.layer3.register_forward_hook(lambda _m, _e, s: capturado.__setitem__("a", s))
+        ncfg = CFG["normalizacion"]
+        media = torch.tensor(ncfg["media"]).view(1, 3, 1, 1)
+        desv = torch.tensor(ncfg["desviacion"]).view(1, 3, 1, 1)
+        with torch.no_grad():
+            modelo((imagenes - media) / desv)
+        return diversidad(capturado["a"]).item()
+
+    assert similitud_final(100.0) < similitud_final(0.0)
+
+
+def test_la_diversidad_apaga_alineacion_y_parte_compartida():
+    """Las dos juntan las imagenes del lote; con diversidad se apagan, pero
+    solo en esa ejecucion."""
+    cfg = _cfg_diversidad(10.0)
+    cfg["imagen"]["compartida"] = [[1, 4]]
+    cfg["regularizacion"]["alineacion"] = {"peso": 100.0, "capas": ["layer1"],
+                                           "decaimiento": 5.0, "alcance": 4}
+    run = _Run()
+    maximizar_activacion(cfg, run=run, modelo=_modelo_congelado())
+    assert all("viz/diversidad" in m for m in run.metricas)
+    assert not any("viz/alineacion" in m for m in run.metricas)
+    # El cfg que llega no se modifica: la siguiente ejecucion sigue igual.
+    assert cfg["imagen"]["compartida"] == [[1, 4]]
+
+
+def test_la_interpolacion_sigue_alineando():
+    """Comprobacion de que no se ha roto lo anterior: sin diversidad, la
+    interpolacion conserva su alineacion."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer3", "canales": [1, 2]}
+    cfg["imagen"]["lote"] = 3
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capas": ["layer1"],
+                                           "decaimiento": 5.0, "alcance": 4}
+    run = _Run()
+    maximizar_activacion(cfg, run=run, modelo=_modelo_congelado())
+    assert all("viz/alineacion" in m for m in run.metricas)
+
+
+def test_diversidad_e_interpolacion_no_se_combinan():
+    cfg = _cfg_diversidad(10.0)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer3", "canales": [1, 2]}
+    with pytest.raises(ValueError, match="no se combinan"):
+        maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+
+def test_la_diversidad_de_un_logit_se_mide_en_otra_capa():
+    """Con un objetivo de clase hay que comparar en una conv: fc no tiene
+    Gram. Con capa dada, funciona; sin ella, el error lo dice."""
+    cfg = _cfg_diversidad(10.0)
+    cfg["objetivo"] = {"tipo": "logit", "capa": "fc", "canal": 3}
+    with pytest.raises(ValueError, match="diversidad.capa"):
+        maximizar_activacion(cfg, modelo=_modelo_congelado())
+    cfg["regularizacion"]["diversidad"]["capa"] = "layer4"
+    imagenes, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
+    assert imagenes.shape == (3, 3, TAM, TAM)

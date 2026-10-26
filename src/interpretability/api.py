@@ -5,6 +5,7 @@
     sueno    = generar_deepdream("layer3")        # capa entera -> foto
     otra     = generar_direccion("layer4", 3)     # direccion aleatoria -> foto
     fila     = generar_interpolacion(neuronas[0], neuronas[1], imagenes=6)
+    facetas  = generar_diversas(neuronas[0], imagenes=4)  # varias facetas
 
 Todo lo demas (parametrizacion de Fourier, robustez, regularizacion) vive
 debajo con los valores de configs/feature_viz.yaml. Si no quieres tocarlo, no
@@ -321,6 +322,56 @@ def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
     fila, _ = maximizar_activacion(
         cfg, modelo=modelo, objetivo=Interpolacion(desde.canal, hasta.canal))
     return fila
+
+
+def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
+                     capa_diversidad: str | None = None,
+                     peso: float | None = None,
+                     pasos: int | None = None,
+                     modelo: nn.Module | None = None,
+                     cfg: dict | None = None) -> torch.Tensor:
+    """Varias fotos distintas que activan la MISMA neurona.
+
+    Es la seccion "Diversity" del articulo: una sola optimizacion ensena una
+    faceta de lo que la neurona detecta; con el termino de diversidad las
+    imagenes del lote se empujan a ser distintas entre si, y cada una puede
+    ensenar otra. Sirve tambien para especies: tipo='logit' con una neurona
+    de 'fc' (su canal es la clase) y capa_diversidad='layer4'.
+
+    Args:
+        neurona: la Activacion, p.ej. una de listar_neuronas().
+        imagenes: cuantas versiones, 2 o mas.
+        tipo: como en generar_imagen(): 'canal', 'neurona', 'logit'...
+        capa_diversidad: donde se comparan las imagenes; por defecto la de
+            la neurona. Obligatoria si la neurona es de 'fc'.
+        peso: el del termino; por defecto el peso_sugerido del YAML.
+        pasos: pasos de optimizacion; por defecto los del YAML.
+        modelo: el modelo ya cargado.
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+
+    Returns:
+        Tensor (imagenes, 3, H, W) en [0, 1].
+    """
+    if int(imagenes) < 2:
+        raise ValueError("la diversidad compara imagenes entre si: hacen falta 2 o mas")
+    if tipo not in POR_NEURONA:
+        raise ValueError(f"tipo desconocido: '{tipo}'. "
+                         f"Opciones: {', '.join(POR_NEURONA)}")
+    cfg = cargar_config(CONFIG) if cfg is None else dict(cfg)
+    gcfg = dict(cfg["regularizacion"])
+    dcfg = dict(gcfg.get("diversidad") or {})
+    dcfg["peso"] = float(dcfg["peso_sugerido"] if peso is None else peso)
+    if capa_diversidad is not None:
+        dcfg["capa"] = capa_diversidad
+    cfg["regularizacion"] = {**gcfg, "diversidad": dcfg}
+    cfg["objetivo"] = {"tipo": tipo, "capa": neurona.capa, "canal": neurona.canal}
+    cfg["imagen"] = {**cfg["imagen"], "lote": int(imagenes)}
+    if pasos is not None:
+        cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
+
+    fotos, _ = maximizar_activacion(
+        cfg, modelo=modelo, objetivo=POR_NEURONA[tipo](neurona.canal))
+    return fotos
 
 
 def _preparar(imagen, cfg: dict) -> torch.Tensor:
