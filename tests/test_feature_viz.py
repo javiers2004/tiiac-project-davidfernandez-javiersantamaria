@@ -711,3 +711,60 @@ def test_la_diversidad_de_un_logit_se_mide_en_otra_capa():
     cfg["regularizacion"]["diversidad"]["capa"] = "layer4"
     imagenes, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
     assert imagenes.shape == (3, 3, TAM, TAM)
+
+
+# --- Aplicacion: listar neuronas y ejemplos del dataset ----------------------
+
+def _fotos(tmp_path, n=4):
+    """Fotos sinteticas distintas: no hay dataset en CI."""
+    from PIL import Image
+    rutas = []
+    g = torch.Generator().manual_seed(0)
+    for i in range(n):
+        pixeles = (torch.rand(TAM, TAM, 3, generator=g) * 255).byte().numpy()
+        ruta = tmp_path / f"foto_{i}.png"
+        Image.fromarray(pixeles).save(ruta)
+        rutas.append(ruta)
+    return rutas
+
+
+def _a_mano(ruta, capa, canal, modelo):
+    """La activacion calculada sin pasar por la api, para comparar."""
+    from src.interpretability.api import _preparar
+    capturado = {}
+    asa = resolver_modulo(modelo, capa).register_forward_hook(
+        lambda _m, _e, s: capturado.__setitem__("a", s))
+    with torch.no_grad():
+        modelo(_preparar(ruta, CFG))
+    asa.remove()
+    return capturado["a"][0, canal].mean().item()
+
+
+def test_listar_neuronas_sigue_dando_lo_mismo(tmp_path):
+    """Se ha sacado el calculo a _por_canal: el ranking no puede cambiar."""
+    from src.interpretability.api import listar_neuronas
+    modelo = _modelo_congelado()
+    ruta = _fotos(tmp_path, 1)[0]
+    top = listar_neuronas(ruta, capas="layer3", top_k=5, modelo=modelo, cfg=CFG)
+    for a in top:
+        assert a.valor == pytest.approx(_a_mano(ruta, "layer3", a.canal, modelo), rel=1e-5)
+    assert [a.valor for a in top] == sorted((a.valor for a in top), reverse=True)
+
+
+def test_los_ejemplos_salen_ordenados_por_activacion(tmp_path):
+    from src.interpretability.api import Activacion, ejemplos_del_dataset
+    modelo = _modelo_congelado()
+    rutas = _fotos(tmp_path)
+    ejemplos = ejemplos_del_dataset(Activacion("layer3", 1, 0.0), tmp_path,
+                                    top_k=3, modelo=modelo, cfg=CFG)
+    esperado = sorted(rutas, key=lambda r: _a_mano(r, "layer3", 1, modelo), reverse=True)
+    assert [e.foto for e in ejemplos] == esperado[:3]
+
+
+def test_los_ejemplos_aceptan_una_lista_y_avisan_si_no_hay_fotos(tmp_path):
+    from src.interpretability.api import Activacion, ejemplos_del_dataset
+    modelo = _modelo_congelado()
+    rutas = _fotos(tmp_path, 2)
+    assert len(ejemplos_del_dataset(Activacion("fc", 3, 0.0), rutas, modelo=modelo, cfg=CFG)) == 2
+    with pytest.raises(ValueError, match="get_data.py"):
+        ejemplos_del_dataset(Activacion("fc", 3, 0.0), [], modelo=modelo, cfg=CFG)
