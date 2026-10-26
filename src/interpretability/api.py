@@ -253,7 +253,8 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
                    tipo: str = "canal",
                    pasos: int | None = None,
                    modelo: nn.Module | None = None,
-                   cfg: dict | None = None) -> torch.Tensor:
+                   cfg: dict | None = None,
+                   al_progresar=None) -> torch.Tensor:
     """La foto que mas activa a esas neuronas, partiendo de ruido.
 
     Args:
@@ -301,13 +302,15 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
 
     construir = POR_NEURONA[tipo]
     objetivo = Suma(tuple(construir(n.canal) for n in neuronas))
-    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo)
+    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo,
+                                     al_progresar=al_progresar)
     return imagen
 
 
 def generar_deepdream(capa: str, pasos: int | None = None,
                       modelo: nn.Module | None = None,
-                      cfg: dict | None = None) -> torch.Tensor:
+                      cfg: dict | None = None,
+                      al_progresar=None) -> torch.Tensor:
     """La foto que mas excita una capa ENTERA, partiendo de ruido.
 
     Es el objetivo Layer (DeepDream) del articulo. No se eligen neuronas, por
@@ -328,13 +331,15 @@ def generar_deepdream(capa: str, pasos: int | None = None,
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=Capa())
+    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=Capa(),
+                                     al_progresar=al_progresar)
     return imagen
 
 
 def generar_direccion(capa: str, semilla: int, pasos: int | None = None,
                       modelo: nn.Module | None = None,
-                      cfg: dict | None = None) -> torch.Tensor:
+                      cfg: dict | None = None,
+                      al_progresar=None) -> torch.Tensor:
     """La foto que mas empuja la capa en una direccion ALEATORIA.
 
     Es el objetivo Direction de "The Interaction between Neurons": en vez de
@@ -359,14 +364,16 @@ def generar_direccion(capa: str, semilla: int, pasos: int | None = None,
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
     imagen, _ = maximizar_activacion(cfg, modelo=modelo,
-                                     objetivo=Direccion(int(semilla)))
+                                     objetivo=Direccion(int(semilla)),
+                                     al_progresar=al_progresar)
     return imagen
 
 
 def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
                           pasos: int | None = None,
                           modelo: nn.Module | None = None,
-                          cfg: dict | None = None) -> torch.Tensor:
+                          cfg: dict | None = None,
+                          al_progresar=None) -> torch.Tensor:
     """Una fila de fotos que va de una neurona a otra.
 
     Es la interpolacion de "The Interaction between Neurons": la primera
@@ -397,7 +404,8 @@ def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
     fila, _ = maximizar_activacion(
-        cfg, modelo=modelo, objetivo=Interpolacion(desde.canal, hasta.canal))
+        cfg, modelo=modelo, objetivo=Interpolacion(desde.canal, hasta.canal),
+        al_progresar=al_progresar)
     return fila
 
 
@@ -406,7 +414,8 @@ def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
                      peso: float | None = None,
                      pasos: int | None = None,
                      modelo: nn.Module | None = None,
-                     cfg: dict | None = None) -> torch.Tensor:
+                     cfg: dict | None = None,
+                     al_progresar=None) -> torch.Tensor:
     """Varias fotos distintas que activan la MISMA neurona.
 
     Es la seccion "Diversity" del articulo: una sola optimizacion ensena una
@@ -447,7 +456,8 @@ def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
     fotos, _ = maximizar_activacion(
-        cfg, modelo=modelo, objetivo=POR_NEURONA[tipo](neurona.canal))
+        cfg, modelo=modelo, objetivo=POR_NEURONA[tipo](neurona.canal),
+        al_progresar=al_progresar)
     return fotos
 
 
