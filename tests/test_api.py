@@ -133,3 +133,82 @@ def test_el_hook_no_se_queda_puesto(foto, modelo, cfg):
     antes = len(modulo._forward_hooks)
     mapa_activacion(foto, Activacion(CAPA, 0, 0.0), modelo=modelo, cfg=cfg)
     assert len(modulo._forward_hooks) == antes
+
+
+# --- Progreso y cancelacion ----------------------------------------------
+#
+# generar_imagen bloquea entre 14 s y 3 minutos. Sin estas dos cosas, una
+# interfaz se queda muda todo ese rato y no hay forma de abortar.
+
+def _cfg_rapida(cfg):
+    import copy
+    c = copy.deepcopy(cfg)
+    c["optimizacion"] = {**c["optimizacion"], "pasos": 6}
+    return c
+
+
+def test_el_callback_se_llama_en_cada_paso(modelo, cfg):
+    from src.interpretability.api import generar_imagen
+    pasos = []
+    generar_imagen(Activacion(CAPA, 0, 0.0), modelo=modelo, cfg=_cfg_rapida(cfg),
+                   al_progresar=lambda p, t, a, im: pasos.append((p, t, im.shape)))
+    assert [p for p, _, _ in pasos] == list(range(6))
+    assert all(t == 6 for _, t, _ in pasos)
+
+
+def test_la_vista_previa_viene_desconectada_del_grafo(modelo, cfg):
+    """Si se pasara el tensor vivo, quien guarde la vista previa mantendria
+    el grafo entero en memoria, paso tras paso."""
+    from src.interpretability.api import generar_imagen
+    vistas = []
+    generar_imagen(Activacion(CAPA, 0, 0.0), modelo=modelo, cfg=_cfg_rapida(cfg),
+                   al_progresar=lambda p, t, a, im: vistas.append(im))
+    assert all(not v.requires_grad and v.grad_fn is None for v in vistas)
+    assert all(v.min() >= 0.0 and v.max() <= 1.0 for v in vistas)
+
+
+def test_devolver_False_corta_la_optimizacion(modelo, cfg):
+    from src.interpretability.api import generar_imagen
+    import copy
+    c = copy.deepcopy(cfg)
+    c["optimizacion"] = {**c["optimizacion"], "pasos": 50}
+    pasos = []
+
+    def corta(p, t, a, im):
+        pasos.append(p)
+        return False if p >= 3 else None
+
+    imagen = generar_imagen(Activacion(CAPA, 0, 0.0), modelo=modelo, cfg=c,
+                            al_progresar=corta)
+    assert pasos == [0, 1, 2, 3]          # para en el 3, no en el 50
+    assert imagen.min() >= 0.0 and imagen.max() <= 1.0
+
+
+def test_sin_callback_todo_sigue_igual(modelo, cfg):
+    """El callback es opcional: ningun llamador existente debia cambiar."""
+    from src.interpretability.api import generar_imagen
+    imagen = generar_imagen(Activacion(CAPA, 0, 0.0), modelo=modelo,
+                            cfg=_cfg_rapida(cfg))
+    assert imagen.shape[0] == 1 and imagen.shape[1] == 3
+
+
+# --- Diversidad, a traves de la fachada ----------------------------------
+#
+# El termino lo cubren los tests de feature_viz.py, pero generar_diversas,
+# que es lo que llamara la aplicacion, no tenia ninguno.
+
+def test_generar_diversas_devuelve_un_lote(modelo, cfg):
+    from src.interpretability.api import generar_diversas
+    fotos = generar_diversas(Activacion(CAPA, 0, 0.0), imagenes=3,
+                             modelo=modelo, cfg=_cfg_rapida(cfg))
+    assert fotos.shape[0] == 3
+    assert fotos.min() >= 0.0 and fotos.max() <= 1.0
+
+
+def test_generar_diversas_da_imagenes_distintas(modelo, cfg):
+    """Si salen iguales, el termino de diversidad no esta llegando y la
+    funcion no sirve para lo que dice servir."""
+    from src.interpretability.api import generar_diversas
+    fotos = generar_diversas(Activacion(CAPA, 0, 0.0), imagenes=2, peso=50.0,
+                             modelo=modelo, cfg=_cfg_rapida(cfg))
+    assert not torch.allclose(fotos[0], fotos[1])
