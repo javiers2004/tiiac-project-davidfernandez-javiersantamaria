@@ -110,6 +110,28 @@ regularizacion:
     decaimiento: 5.0      # la pareja (i, i+d) pesa 1 / decaimiento**d. lucid:
                           # 2 en alignment(), 5 en su notebook de interpolacion
     alcance: 4            # d va de 1 a alcance (lucid: 4)
+  # Diversidad, de la seccion "Diversity": con imagen.lote > 1, empuja a que
+  # las imagenes del lote activen la capa con "estilos" distintos (matrices de
+  # Gram poco parecidas), para ver varias facetas de la misma neurona.
+  # APAGADA por defecto (peso 0): no cambia nada de lo demas. Se enciende con
+  # --diversidad en el CLI o con api.generar_diversas(), que usan
+  # peso_sugerido. Mientras esta encendida se apagan la alineacion y la parte
+  # compartida, que empujan en sentido contrario, y no se puede combinar con
+  # la interpolacion.
+  diversidad:
+    peso: 0.0
+    # Elegido con un barrido sobre layer4 canal 443, 4 imagenes, 256 pasos.
+    # "Similitud" es el coseno medio entre las Gram de cada par (1 = iguales):
+    #     peso   activacion (media)   similitud
+    #       0        100 %              0.96   cuatro veces la misma textura
+    #       3         98 %              0.69   variaciones de un mismo tema
+    #      10         79 %              0.33   facetas distintas
+    #      30         57 %              0.10   imagenes desvaidas
+    #     100         20 %              0.01   colapsa (3 de 4 cerca de 0)
+    # lucid usa 100, pero con otro modelo y otras escalas: no es trasladable.
+    peso_sugerido: 10.0
+    capa: null            # null = la del objetivo. Con objetivos en fc hay
+                          # que dar una conv, p.ej. layer4
 
 robustez:
   # Interruptor "Transformation Robustness" del articulo. En false se salta

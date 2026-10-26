@@ -20,6 +20,7 @@ from src.interpretability.feature_viz import (
     UnidadMuerta,
     alineacion,
     aplicar_robustez,
+    diversidad,
     maximizar_activacion,
     nombre_salida,
 )
@@ -564,3 +565,206 @@ def test_la_deteccion_de_unidad_muerta_vale_para_las_dos_parametrizaciones():
         modelo.layer4.register_forward_hook(lambda _m, _e, s: s * 0)
         with pytest.raises(UnidadMuerta):
             maximizar_activacion(cfg, modelo=modelo)
+
+
+# --- Diversidad ------------------------------------------------------------
+
+class _Run:
+    """Sustituto de un run de W&B que guarda lo que se registra."""
+
+    def __init__(self):
+        self.metricas = []
+
+    def log(self, m, step=None):
+        self.metricas.append(m)
+
+
+def _cfg_diversidad(peso, lote=3, pasos=4):
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "canal", "capa": "layer3", "canal": 1}
+    cfg["imagen"]["lote"] = lote
+    cfg["optimizacion"]["pasos"] = pasos
+    cfg["regularizacion"]["diversidad"] = {"peso": peso, "capa": None}
+    return cfg
+
+
+def test_la_diversidad_de_un_lote_igual_es_maxima():
+    """Tres imagenes identicas: cada par tiene coseno 1, y hay 3*2 pares
+    ordenados entre 3 imagenes, asi que da 6 / 3 = 2 = lote - 1."""
+    act = torch.rand(1, 4, 5, 5).repeat(3, 1, 1, 1)
+    assert diversidad(act).item() == pytest.approx(2.0)
+
+
+def test_la_diversidad_de_canales_disjuntos_es_cero():
+    """Si cada imagen enciende canales distintos, sus Gram no comparten nada."""
+    act = torch.zeros(2, 2, 3, 3)
+    act[0, 0] = 1.0
+    act[1, 1] = 1.0
+    assert diversidad(act).item() == pytest.approx(0.0)
+
+
+def test_la_diversidad_no_mira_donde_estan_las_cosas():
+    """La Gram suma sobre posiciones: la misma imagen desplazada tiene el
+    mismo "estilo". Es la idea que el articulo toma de la transferencia de
+    estilo, y lo que la distingue de comparar pixeles."""
+    a = torch.rand(1, 4, 6, 6)
+    desplazada = torch.roll(a, shifts=(2, 3), dims=(2, 3))
+    assert diversidad(torch.cat([a, desplazada])).item() == pytest.approx(1.0)
+
+
+def test_la_diversidad_no_depende_de_la_escala():
+    """Es una similitud coseno: activar mas fuerte no cuenta como distinto."""
+    act = torch.rand(3, 4, 5, 5)
+    assert torch.allclose(diversidad(act), diversidad(act * 7))
+
+
+def test_la_diversidad_en_fc_falla_con_mensaje_util():
+    with pytest.raises(ValueError, match="diversidad.capa"):
+        diversidad(torch.randn(3, 10))
+
+
+def test_la_diversidad_apagada_no_cambia_nada():
+    """Lo que pidio el equipo: es algo que se PUEDE hacer, no un cambio en
+    lo que ya habia. Con peso 0, lo mismo que sin la clave."""
+    modelo = _modelo_congelado()
+    cfg = _cfg_diversidad(0.0)
+    sin_clave = copy.deepcopy(cfg)
+    del sin_clave["regularizacion"]["diversidad"]
+    a, _ = maximizar_activacion(cfg, modelo=modelo)
+    b, _ = maximizar_activacion(sin_clave, modelo=modelo)
+    assert torch.equal(a, b)
+
+
+def test_la_diversidad_viene_apagada_en_el_yaml():
+    from src.interpretability.feature_viz import RAIZ, cargar_config
+    cfg = cargar_config(RAIZ / "configs" / "feature_viz.yaml")
+    assert cfg["regularizacion"]["diversidad"]["peso"] == 0.0
+
+
+def test_la_diversidad_con_una_imagen_no_hace_nada():
+    modelo = _modelo_congelado()
+    a, _ = maximizar_activacion(_cfg_diversidad(1000.0, lote=1), modelo=modelo)
+    b, _ = maximizar_activacion(_cfg_diversidad(0.0, lote=1), modelo=modelo)
+    assert torch.equal(a, b)
+
+
+def test_la_diversidad_separa_las_imagenes():
+    """El efecto que se busca: con el termino, las imagenes del lote acaban
+    con Gram menos parecidas que sin el (partiendo del mismo ruido)."""
+    def similitud_final(peso):
+        modelo = _modelo_congelado()
+        imagenes, _ = maximizar_activacion(_cfg_diversidad(peso, pasos=12), modelo=modelo)
+        capturado = {}
+        modelo.layer3.register_forward_hook(lambda _m, _e, s: capturado.__setitem__("a", s))
+        ncfg = CFG["normalizacion"]
+        media = torch.tensor(ncfg["media"]).view(1, 3, 1, 1)
+        desv = torch.tensor(ncfg["desviacion"]).view(1, 3, 1, 1)
+        with torch.no_grad():
+            modelo((imagenes - media) / desv)
+        return diversidad(capturado["a"]).item()
+
+    assert similitud_final(100.0) < similitud_final(0.0)
+
+
+def test_la_diversidad_apaga_alineacion_y_parte_compartida():
+    """Las dos juntan las imagenes del lote; con diversidad se apagan, pero
+    solo en esa ejecucion."""
+    cfg = _cfg_diversidad(10.0)
+    cfg["imagen"]["compartida"] = [[1, 4]]
+    cfg["regularizacion"]["alineacion"] = {"peso": 100.0, "capas": ["layer1"],
+                                           "decaimiento": 5.0, "alcance": 4}
+    run = _Run()
+    maximizar_activacion(cfg, run=run, modelo=_modelo_congelado())
+    assert all("viz/diversidad" in m for m in run.metricas)
+    assert not any("viz/alineacion" in m for m in run.metricas)
+    # El cfg que llega no se modifica: la siguiente ejecucion sigue igual.
+    assert cfg["imagen"]["compartida"] == [[1, 4]]
+
+
+def test_la_interpolacion_sigue_alineando():
+    """Comprobacion de que no se ha roto lo anterior: sin diversidad, la
+    interpolacion conserva su alineacion."""
+    cfg = copy.deepcopy(CFG)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer3", "canales": [1, 2]}
+    cfg["imagen"]["lote"] = 3
+    cfg["regularizacion"]["alineacion"] = {"peso": 1.0, "capas": ["layer1"],
+                                           "decaimiento": 5.0, "alcance": 4}
+    run = _Run()
+    maximizar_activacion(cfg, run=run, modelo=_modelo_congelado())
+    assert all("viz/alineacion" in m for m in run.metricas)
+
+
+def test_diversidad_e_interpolacion_no_se_combinan():
+    cfg = _cfg_diversidad(10.0)
+    cfg["objetivo"] = {"tipo": "interpolacion", "capa": "layer3", "canales": [1, 2]}
+    with pytest.raises(ValueError, match="no se combinan"):
+        maximizar_activacion(cfg, modelo=_modelo_congelado())
+
+
+def test_la_diversidad_de_un_logit_se_mide_en_otra_capa():
+    """Con un objetivo de clase hay que comparar en una conv: fc no tiene
+    Gram. Con capa dada, funciona; sin ella, el error lo dice."""
+    cfg = _cfg_diversidad(10.0)
+    cfg["objetivo"] = {"tipo": "logit", "capa": "fc", "canal": 3}
+    with pytest.raises(ValueError, match="diversidad.capa"):
+        maximizar_activacion(cfg, modelo=_modelo_congelado())
+    cfg["regularizacion"]["diversidad"]["capa"] = "layer4"
+    imagenes, _ = maximizar_activacion(cfg, modelo=_modelo_congelado())
+    assert imagenes.shape == (3, 3, TAM, TAM)
+
+
+# --- Aplicacion: listar neuronas y ejemplos del dataset ----------------------
+
+def _fotos(tmp_path, n=4):
+    """Fotos sinteticas distintas: no hay dataset en CI."""
+    from PIL import Image
+    rutas = []
+    g = torch.Generator().manual_seed(0)
+    for i in range(n):
+        pixeles = (torch.rand(TAM, TAM, 3, generator=g) * 255).byte().numpy()
+        ruta = tmp_path / f"foto_{i}.png"
+        Image.fromarray(pixeles).save(ruta)
+        rutas.append(ruta)
+    return rutas
+
+
+def _a_mano(ruta, capa, canal, modelo):
+    """La activacion calculada sin pasar por la api, para comparar."""
+    from src.interpretability.api import _preparar
+    capturado = {}
+    asa = resolver_modulo(modelo, capa).register_forward_hook(
+        lambda _m, _e, s: capturado.__setitem__("a", s))
+    with torch.no_grad():
+        modelo(_preparar(ruta, CFG))
+    asa.remove()
+    return capturado["a"][0, canal].mean().item()
+
+
+def test_listar_neuronas_sigue_dando_lo_mismo(tmp_path):
+    """Se ha sacado el calculo a _por_canal: el ranking no puede cambiar."""
+    from src.interpretability.api import listar_neuronas
+    modelo = _modelo_congelado()
+    ruta = _fotos(tmp_path, 1)[0]
+    top = listar_neuronas(ruta, capas="layer3", top_k=5, modelo=modelo, cfg=CFG)
+    for a in top:
+        assert a.valor == pytest.approx(_a_mano(ruta, "layer3", a.canal, modelo), rel=1e-5)
+    assert [a.valor for a in top] == sorted((a.valor for a in top), reverse=True)
+
+
+def test_los_ejemplos_salen_ordenados_por_activacion(tmp_path):
+    from src.interpretability.api import Activacion, ejemplos_del_dataset
+    modelo = _modelo_congelado()
+    rutas = _fotos(tmp_path)
+    ejemplos = ejemplos_del_dataset(Activacion("layer3", 1, 0.0), tmp_path,
+                                    top_k=3, modelo=modelo, cfg=CFG)
+    esperado = sorted(rutas, key=lambda r: _a_mano(r, "layer3", 1, modelo), reverse=True)
+    assert [e.foto for e in ejemplos] == esperado[:3]
+
+
+def test_los_ejemplos_aceptan_una_lista_y_avisan_si_no_hay_fotos(tmp_path):
+    from src.interpretability.api import Activacion, ejemplos_del_dataset
+    modelo = _modelo_congelado()
+    rutas = _fotos(tmp_path, 2)
+    assert len(ejemplos_del_dataset(Activacion("fc", 3, 0.0), rutas, modelo=modelo, cfg=CFG)) == 2
+    with pytest.raises(ValueError, match="get_data.py"):
+        ejemplos_del_dataset(Activacion("fc", 3, 0.0), [], modelo=modelo, cfg=CFG)

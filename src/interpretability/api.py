@@ -5,6 +5,8 @@
     sueno    = generar_deepdream("layer3")        # capa entera -> foto
     otra     = generar_direccion("layer4", 3)     # direccion aleatoria -> foto
     fila     = generar_interpolacion(neuronas[0], neuronas[1], imagenes=6)
+    facetas  = generar_diversas(neuronas[0], imagenes=4)  # varias facetas
+    reales   = ejemplos_del_dataset(neuronas[0], "data/muestras")  # y fotos reales
 
 Todo lo demas (parametrizacion de Fourier, robustez, regularizacion) vive
 debajo con los valores de configs/feature_viz.yaml. Si no quieres tocarlo, no
@@ -150,20 +152,7 @@ def listar_neuronas(imagen, capas: str | list[str] = "layer4", top_k: int = 10,
     salida: list[Activacion] = []
 
     for capa in capas:
-        capturado: dict[str, torch.Tensor] = {}
-        asa = resolver_modulo(modelo, capa).register_forward_hook(
-            lambda _m, _e, s: capturado.__setitem__("act", s)
-        )
-        try:
-            with torch.no_grad():
-                modelo(x)
-        finally:
-            asa.remove()
-
-        act = capturado["act"]
-        # La media espacial de cada canal: es exactamente el objetivo Channel,
-        # medido en vez de maximizado.
-        por_canal = act[0].mean(dim=(1, 2)) if act.dim() == 4 else act[0]
+        por_canal = _por_canal(x, capa, modelo)
         valores, indices = por_canal.topk(min(top_k, por_canal.numel()))
         salida += [Activacion(capa, int(i), float(v))
                    for v, i in zip(valores, indices)]
@@ -321,6 +310,129 @@ def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
     fila, _ = maximizar_activacion(
         cfg, modelo=modelo, objetivo=Interpolacion(desde.canal, hasta.canal))
     return fila
+
+
+def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
+                     capa_diversidad: str | None = None,
+                     peso: float | None = None,
+                     pasos: int | None = None,
+                     modelo: nn.Module | None = None,
+                     cfg: dict | None = None) -> torch.Tensor:
+    """Varias fotos distintas que activan la MISMA neurona.
+
+    Es la seccion "Diversity" del articulo: una sola optimizacion ensena una
+    faceta de lo que la neurona detecta; con el termino de diversidad las
+    imagenes del lote se empujan a ser distintas entre si, y cada una puede
+    ensenar otra. Sirve tambien para especies: tipo='logit' con una neurona
+    de 'fc' (su canal es la clase) y capa_diversidad='layer4'.
+
+    Args:
+        neurona: la Activacion, p.ej. una de listar_neuronas().
+        imagenes: cuantas versiones, 2 o mas.
+        tipo: como en generar_imagen(): 'canal', 'neurona', 'logit'...
+        capa_diversidad: donde se comparan las imagenes; por defecto la de
+            la neurona. Obligatoria si la neurona es de 'fc'.
+        peso: el del termino; por defecto el peso_sugerido del YAML.
+        pasos: pasos de optimizacion; por defecto los del YAML.
+        modelo: el modelo ya cargado.
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+
+    Returns:
+        Tensor (imagenes, 3, H, W) en [0, 1].
+    """
+    if int(imagenes) < 2:
+        raise ValueError("la diversidad compara imagenes entre si: hacen falta 2 o mas")
+    if tipo not in POR_NEURONA:
+        raise ValueError(f"tipo desconocido: '{tipo}'. "
+                         f"Opciones: {', '.join(POR_NEURONA)}")
+    cfg = cargar_config(CONFIG) if cfg is None else dict(cfg)
+    gcfg = dict(cfg["regularizacion"])
+    dcfg = dict(gcfg.get("diversidad") or {})
+    dcfg["peso"] = float(dcfg["peso_sugerido"] if peso is None else peso)
+    if capa_diversidad is not None:
+        dcfg["capa"] = capa_diversidad
+    cfg["regularizacion"] = {**gcfg, "diversidad": dcfg}
+    cfg["objetivo"] = {"tipo": tipo, "capa": neurona.capa, "canal": neurona.canal}
+    cfg["imagen"] = {**cfg["imagen"], "lote": int(imagenes)}
+    if pasos is not None:
+        cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
+
+    fotos, _ = maximizar_activacion(
+        cfg, modelo=modelo, objetivo=POR_NEURONA[tipo](neurona.canal))
+    return fotos
+
+
+@dataclass(frozen=True)
+class Ejemplo:
+    """Una foto real y cuanto activa una neurona."""
+
+    foto: Path
+    valor: float
+
+    def __str__(self) -> str:
+        return f"{self.foto.name} = {self.valor:.3f}"
+
+
+def ejemplos_del_dataset(neurona: Activacion, fotos: str | Path | list,
+                         top_k: int = 6, modelo: nn.Module | None = None,
+                         cfg: dict | None = None) -> list[Ejemplo]:
+    """Las fotos reales que mas activan una neurona, de mas a menos.
+
+    Es la contraparte de las visualizaciones que usa el articulo ("dataset
+    examples"): con la diversidad salen varias facetas de una neurona, y
+    mirar las fotos que mas la activan es como se comprueba si esas facetas
+    existen de verdad o son artefactos de la optimizacion.
+
+    Mide lo mismo que listar_neuronas(): la media espacial del canal, o el
+    logit si la neurona es de 'fc'.
+
+    Args:
+        neurona: la Activacion; de ella solo se usan capa y canal.
+        fotos: una carpeta (se toman sus .jpg, .jpeg y .png) o una lista de
+            rutas. `python scripts/get_data.py --fotos N` baja unas cuantas.
+        top_k: cuantas devolver.
+        modelo: el modelo ya cargado.
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+
+    Returns:
+        Las top_k fotos ordenadas de mayor a menor activacion.
+    """
+    cfg = cfg or cargar_config(CONFIG)
+    modelo = modelo or cargar_modelo(cfg)
+    if isinstance(fotos, (str, Path)):
+        carpeta = Path(fotos)
+        rutas = sorted(f for f in carpeta.iterdir()
+                       if f.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    else:
+        rutas = [Path(f) for f in fotos]
+    if not rutas:
+        raise ValueError(f"no hay fotos en {fotos}. Se bajan con "
+                         f"`python scripts/get_data.py --fotos N`.")
+
+    valores = [float(_por_canal(_preparar(r, cfg), neurona.capa, modelo)[neurona.canal])
+               for r in rutas]
+    orden = sorted(zip(rutas, valores), key=lambda rv: rv[1], reverse=True)
+    return [Ejemplo(r, v) for r, v in orden[:top_k]]
+
+
+def _por_canal(x: torch.Tensor, capa: str, modelo: nn.Module) -> torch.Tensor:
+    """Activacion de cada canal de `capa` para una entrada ya preparada: (C,).
+
+    La media espacial de cada canal es exactamente el objetivo Channel,
+    medido en vez de maximizado. En 'fc' es el logit de cada clase.
+    """
+    capturado: dict[str, torch.Tensor] = {}
+    asa = resolver_modulo(modelo, capa).register_forward_hook(
+        lambda _m, _e, s: capturado.__setitem__("act", s)
+    )
+    try:
+        with torch.no_grad():
+            modelo(x)
+    finally:
+        asa.remove()
+
+    act = capturado["act"]
+    return act[0].mean(dim=(1, 2)) if act.dim() == 4 else act[0]
 
 
 def _preparar(imagen, cfg: dict) -> torch.Tensor:
