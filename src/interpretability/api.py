@@ -20,6 +20,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from PIL import Image
 
@@ -160,11 +161,100 @@ def listar_neuronas(imagen, capas: str | list[str] = "layer4", top_k: int = 10,
     return sorted(salida, key=lambda a: a.valor, reverse=True)
 
 
+def mapa_activacion(imagen, neurona: Activacion,
+                    modelo: nn.Module | None = None,
+                    cfg: dict | None = None,
+                    recortar_negativos: bool = True) -> torch.Tensor:
+    """Donde se enciende esa neurona DENTRO de la foto.
+
+    Un canal de una capa convolucional no da un numero: da una rejilla (14x14
+    en layer3 a 224 px) con un valor por cada trozo de la imagen.
+    `listar_neuronas` promedia esa rejilla para poder ordenar canales; esta
+    funcion devuelve la rejilla ANTES del promedio, estirada al tamano de la
+    foto.
+
+    Es el eslabon que falta entre el ranking y el patron optimizado: sin el,
+    la interfaz salta de un numero a un dibujo que no se parece a la foto y
+    nada explica que tienen que ver.
+
+    Args:
+        imagen: ruta a un fichero, o un tensor (1,3,H,W) en [0,1].
+        neurona: la Activacion que devuelve listar_neuronas; lleva capa y canal.
+        modelo: el modelo ya cargado.
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+        recortar_negativos: las capas pre-ReLU (layer3.1.conv2 y companeras)
+            dan valores negativos, que significan que esa zona INHIBE el canal.
+            Por defecto se recortan a cero, que es lo habitual en un mapa de
+            calor. En False se conserva el signo y el mapa se normaliza
+            alrededor de cero.
+
+    Returns:
+        Tensor (H, W) en [0, 1], del tamano de imagen.tamano, listo para
+        pintarse como mapa de calor sobre la foto.
+    """
+    cfg = cfg or cargar_config(CONFIG)
+    modelo = modelo or cargar_modelo(cfg)
+
+    act = _activacion_de(_preparar(imagen, cfg), neurona.capa, modelo)
+    if act.dim() != 4:
+        raise ValueError(
+            f"la capa '{neurona.capa}' no tiene extension espacial "
+            f"({tuple(act.shape)}), asi que no hay nada que mapear. "
+            f"Los mapas solo tienen sentido en capas convolucionales."
+        )
+    if not 0 <= neurona.canal < act.shape[1]:
+        raise IndexError(f"la capa '{neurona.capa}' tiene {act.shape[1]} "
+                         f"canales; el canal {neurona.canal} no existe")
+
+    mapa = act[0, neurona.canal]
+    # Un canal apagado del todo da un mapa constante. Sin el guardia del tope
+    # saldria una division por cero: un mapa de NaN se pinta en negro y
+    # parece un resultado valido.
+    if recortar_negativos:
+        mapa = mapa.clamp(min=0)
+        tope = float(mapa.max())
+        mapa = mapa / tope if tope > 0 else torch.zeros_like(mapa)
+    else:
+        # Escala simetrica: 0.5 es ausencia de respuesta, y los extremos
+        # inhiben y excitan por igual.
+        tope = float(mapa.abs().max())
+        mapa = mapa / (2 * tope) + 0.5 if tope > 0 else torch.full_like(mapa, 0.5)
+
+    tam = int(cfg["imagen"]["tamano"])
+    return F.interpolate(mapa[None, None], size=(tam, tam),
+                         mode="bilinear", align_corners=False)[0, 0]
+
+
+def superponer_mapa(imagen, mapa: torch.Tensor, cfg: dict | None = None,
+                    mezcla: float = 0.55) -> torch.Tensor:
+    """Pinta el mapa de calor encima de la foto.
+
+    Args:
+        imagen: la misma foto que se le paso a mapa_activacion().
+        mapa: lo que devuelve mapa_activacion(), (H, W) en [0, 1].
+        cfg: configuracion; por defecto configs/feature_viz.yaml.
+        mezcla: cuanto pesa el mapa frente a la foto, de 0 a 1.
+
+    Returns:
+        Tensor (3, H, W) en [0, 1], listo para save_image().
+    """
+    from matplotlib import cm          # pesa al importar; solo hace falta aqui
+
+    cfg = cfg or cargar_config(CONFIG)
+    tam = int(cfg["imagen"]["tamano"])
+
+    foto = _a_tensor(imagen, tam)[0]
+    calor = torch.as_tensor(cm.inferno(mapa.cpu().numpy())[..., :3],
+                            dtype=torch.float32).permute(2, 0, 1)
+    return (foto * (1 - mezcla) + calor * mezcla).clamp(0, 1)
+
+
 def generar_imagen(neuronas: Activacion | list[Activacion],
                    tipo: str = "canal",
                    pasos: int | None = None,
                    modelo: nn.Module | None = None,
-                   cfg: dict | None = None) -> torch.Tensor:
+                   cfg: dict | None = None,
+                   al_progresar=None) -> torch.Tensor:
     """La foto que mas activa a esas neuronas, partiendo de ruido.
 
     Args:
@@ -212,13 +302,15 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
 
     construir = POR_NEURONA[tipo]
     objetivo = Suma(tuple(construir(n.canal) for n in neuronas))
-    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo)
+    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo,
+                                     al_progresar=al_progresar)
     return imagen
 
 
 def generar_deepdream(capa: str, pasos: int | None = None,
                       modelo: nn.Module | None = None,
-                      cfg: dict | None = None) -> torch.Tensor:
+                      cfg: dict | None = None,
+                      al_progresar=None) -> torch.Tensor:
     """La foto que mas excita una capa ENTERA, partiendo de ruido.
 
     Es el objetivo Layer (DeepDream) del articulo. No se eligen neuronas, por
@@ -239,13 +331,15 @@ def generar_deepdream(capa: str, pasos: int | None = None,
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=Capa())
+    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=Capa(),
+                                     al_progresar=al_progresar)
     return imagen
 
 
 def generar_direccion(capa: str, semilla: int, pasos: int | None = None,
                       modelo: nn.Module | None = None,
-                      cfg: dict | None = None) -> torch.Tensor:
+                      cfg: dict | None = None,
+                      al_progresar=None) -> torch.Tensor:
     """La foto que mas empuja la capa en una direccion ALEATORIA.
 
     Es el objetivo Direction de "The Interaction between Neurons": en vez de
@@ -270,14 +364,16 @@ def generar_direccion(capa: str, semilla: int, pasos: int | None = None,
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
     imagen, _ = maximizar_activacion(cfg, modelo=modelo,
-                                     objetivo=Direccion(int(semilla)))
+                                     objetivo=Direccion(int(semilla)),
+                                     al_progresar=al_progresar)
     return imagen
 
 
 def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
                           pasos: int | None = None,
                           modelo: nn.Module | None = None,
-                          cfg: dict | None = None) -> torch.Tensor:
+                          cfg: dict | None = None,
+                          al_progresar=None) -> torch.Tensor:
     """Una fila de fotos que va de una neurona a otra.
 
     Es la interpolacion de "The Interaction between Neurons": la primera
@@ -308,7 +404,8 @@ def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
     fila, _ = maximizar_activacion(
-        cfg, modelo=modelo, objetivo=Interpolacion(desde.canal, hasta.canal))
+        cfg, modelo=modelo, objetivo=Interpolacion(desde.canal, hasta.canal),
+        al_progresar=al_progresar)
     return fila
 
 
@@ -317,7 +414,8 @@ def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
                      peso: float | None = None,
                      pasos: int | None = None,
                      modelo: nn.Module | None = None,
-                     cfg: dict | None = None) -> torch.Tensor:
+                     cfg: dict | None = None,
+                     al_progresar=None) -> torch.Tensor:
     """Varias fotos distintas que activan la MISMA neurona.
 
     Es la seccion "Diversity" del articulo: una sola optimizacion ensena una
@@ -358,7 +456,8 @@ def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
     fotos, _ = maximizar_activacion(
-        cfg, modelo=modelo, objetivo=POR_NEURONA[tipo](neurona.canal))
+        cfg, modelo=modelo, objetivo=POR_NEURONA[tipo](neurona.canal),
+        al_progresar=al_progresar)
     return fotos
 
 
@@ -421,18 +520,21 @@ def _por_canal(x: torch.Tensor, capa: str, modelo: nn.Module) -> torch.Tensor:
     La media espacial de cada canal es exactamente el objetivo Channel,
     medido en vez de maximizado. En 'fc' es el logit de cada clase.
     """
-    capturado: dict[str, torch.Tensor] = {}
-    asa = resolver_modulo(modelo, capa).register_forward_hook(
-        lambda _m, _e, s: capturado.__setitem__("act", s)
-    )
-    try:
-        with torch.no_grad():
-            modelo(x)
-    finally:
-        asa.remove()
-
-    act = capturado["act"]
+    act = _activacion_de(x, capa, modelo)
     return act[0].mean(dim=(1, 2)) if act.dim() == 4 else act[0]
+def _a_tensor(imagen, tam: int) -> torch.Tensor:
+    """Fichero o tensor -> tensor (1,3,tam,tam) en [0,1], SIN normalizar.
+
+    Es la foto tal cual se ve. La version normalizada, que es la que come el
+    modelo, sale de _preparar().
+    """
+    if isinstance(imagen, (str, Path)):
+        imagen = TF.to_tensor(Image.open(imagen).convert("RGB")).unsqueeze(0)
+    if imagen.dim() == 3:
+        imagen = imagen.unsqueeze(0)
+    if imagen.shape[-2:] != (tam, tam):
+        imagen = TF.resize(imagen, [tam, tam], antialias=True)
+    return imagen
 
 
 def _preparar(imagen, cfg: dict) -> torch.Tensor:
@@ -442,15 +544,26 @@ def _preparar(imagen, cfg: dict) -> torch.Tensor:
     divergen, el ranking que ve el usuario no corresponde a lo que luego se
     optimiza, y no da ningun error.
     """
-    tam = int(cfg["imagen"]["tamano"])
-    if isinstance(imagen, (str, Path)):
-        imagen = TF.to_tensor(Image.open(imagen).convert("RGB")).unsqueeze(0)
-    if imagen.dim() == 3:
-        imagen = imagen.unsqueeze(0)
-    if imagen.shape[-2:] != (tam, tam):
-        imagen = TF.resize(imagen, [tam, tam], antialias=True)
-
     ncfg = cfg["normalizacion"]
     media = torch.tensor(ncfg["media"]).view(1, 3, 1, 1)
     desv = torch.tensor(ncfg["desviacion"]).view(1, 3, 1, 1)
-    return (imagen - media) / desv
+    return (_a_tensor(imagen, int(cfg["imagen"]["tamano"])) - media) / desv
+
+
+def _activacion_de(x: torch.Tensor, capa: str, modelo: nn.Module) -> torch.Tensor:
+    """Pasa la entrada ya normalizada y devuelve la activacion de esa capa.
+
+    El hook se quita siempre, incluso si el forward falla: un hook olvidado
+    se dispara en todas las llamadas posteriores y captura activaciones que
+    nadie pidio.
+    """
+    capturado: dict[str, torch.Tensor] = {}
+    asa = resolver_modulo(modelo, capa).register_forward_hook(
+        lambda _m, _e, salida: capturado.__setitem__("act", salida)
+    )
+    try:
+        with torch.no_grad():
+            modelo(x)
+    finally:
+        asa.remove()
+    return capturado["act"]

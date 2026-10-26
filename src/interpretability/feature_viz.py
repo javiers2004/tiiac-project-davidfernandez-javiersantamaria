@@ -40,7 +40,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -272,7 +272,9 @@ def construir_modelo_congelado(mcfg: dict) -> nn.Module:
 
 def maximizar_activacion(cfg: dict, run: Any | None = None,
                          modelo: nn.Module | None = None,
-                         objetivo: Any | None = None
+                         objetivo: Any | None = None,
+                         al_progresar: Callable[[int, int, float,
+                                                 torch.Tensor], Any] | None = None
                          ) -> tuple[torch.Tensor, list[float]]:
     """Optimiza una imagen de ruido para maximizar la activacion de una neurona.
 
@@ -281,6 +283,16 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
         run: run de W&B abierto, o None.
         modelo: modelo ya congelado. Si es None se carga el del checkpoint.
             Se inyecta desde los tests, que no tienen los .tar disponibles.
+        al_progresar: se llama en cada paso con (paso, pasos, activacion,
+            imagen), donde imagen es el estado actual (lote,3,H,W) en [0,1],
+            desconectada del grafo. Si devuelve False la optimizacion para y
+            se devuelve lo que haya hasta ese momento.
+
+            Existe porque esto bloquea entre 14 segundos y 3 minutos sin dar
+            senales, y una interfaz no puede quedarse muda tanto rato. Es un
+            callback y no un generador a proposito: asi no cambia el `return`,
+            y ningun llamador existente (la CLI, las seis funciones de api.py,
+            los tests) tiene que tocarse.
 
     Returns:
         (imagen, historial) con las imagenes finales (lote,3,H,W) en [0,1] y
@@ -418,6 +430,15 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             registrar(run, {**metricas, "viz/perdida": perdida.item()}, paso)
             if paso % max(1, pasos // 10) == 0:
                 print(f"paso {paso:4d}/{pasos}  activacion={valor:+.4f}")
+
+            if al_progresar is not None:
+                # La vista previa va detached y en cpu: si se le pasara el
+                # tensor vivo, quien la guarde mantendria el grafo entero en
+                # memoria paso tras paso.
+                with torch.no_grad():
+                    vista = parametrizacion().detach().cpu()
+                if al_progresar(paso, pasos, valor, vista) is False:
+                    break
     finally:
         for asa in asas:
             asa.remove()

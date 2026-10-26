@@ -165,5 +165,7 @@ salida:
 
 wandb:
   proyecto: tiiac-2026
-  entidad: null
-  modo: disabled          # 'online' para registrar el barrido de neuronas
+  entidad: javier-santamaria-p-deusto
+  # 'disabled' no registra nada, 'offline' guarda en wandb/ para sincronizar
+  # despues con `wandb sync`, y 'online' sube segun corre.
+  modo: online

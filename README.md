@@ -16,7 +16,7 @@ con <aplicativo: buscador semántico / detector en vídeo / lo que sea> construi
 
 - **Paper:** <enlace a arXiv o DOI>
 - **Implementación de referencia:** <enlace, o «ninguna: el paper se implementa desde cero»>
-- **Seguimiento de experimentos:** <enlace al proyecto de W&B — obligatorio>
+- **Seguimiento de experimentos:** https://wandb.ai/javier-santamaria-p-deusto/tiiac-2026
 - **Autoría:** <Nombre 1>, <Nombre 2>
 
 ## Resultado
