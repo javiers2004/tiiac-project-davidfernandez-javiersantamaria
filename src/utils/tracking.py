@@ -9,8 +9,15 @@ from __future__ import annotations
 from typing import Any
 
 
-def abrir_run(cfg: dict) -> Any | None:
-    """Abre un run de W&B, o devuelve None si esta desactivado."""
+def abrir_run(cfg: dict, nombre: str | None = None) -> Any | None:
+    """Abre un run de W&B, o devuelve None si esta desactivado.
+
+    Args:
+        cfg: la configuracion completa, que se guarda con el run.
+        nombre: como se llama el run en la web. Si es None se usa
+            experimento.nombre, que es el mismo para todos y hace que una
+            lista de veinte runs sea ilegible.
+    """
     wcfg = cfg.get("wandb", {})
     if wcfg.get("modo") == "disabled":
         return None
@@ -23,7 +30,7 @@ def abrir_run(cfg: dict) -> Any | None:
     return wandb.init(
         project=wcfg.get("proyecto", "tiiac-2026"),
         entity=wcfg.get("entidad"),
-        name=cfg["experimento"]["nombre"],
+        name=nombre or cfg["experimento"]["nombre"],
         config=cfg,
         mode=wcfg.get("modo", "online"),
     )

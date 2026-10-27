@@ -581,6 +581,33 @@ def cargar_config(ruta: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def nombre_run(ocfg: dict, args) -> str:
+    """Como se llama el run en W&B.
+
+    El objetivo, mas los mandos que se hayan cambiado por linea de comandos.
+    Sin esto todos los runs se llaman igual (experimento.nombre) y una lista
+    de veinte es ilegible, que es justo lo contrario de para lo que sirve
+    registrar experimentos.
+
+    Solo se anaden los mandos pasados por CLI: son los que distinguen este
+    run de la configuracion del YAML, que ya se guarda entera aparte.
+    """
+    partes = [nombre_salida(ocfg)]
+    for bandera, valor in (("pasos", args.pasos), ("lr", args.learning_rate),
+                           ("l1", args.l1), ("tv", args.tv), ("blur", args.blur),
+                           ("jitter", args.jitter), ("lote", args.lote)):
+        if valor is not None:
+            partes.append(f"{bandera}{valor:g}" if isinstance(valor, (int, float))
+                          else f"{bandera}{valor}")
+    if args.parametrizacion:
+        partes.append(args.parametrizacion)
+    if args.sin_robustez:
+        partes.append("sin-robustez")
+    if getattr(args, "diversidad", False):
+        partes.append("diversidad")
+    return "-".join(partes)
+
+
 def nombre_salida(ocfg: dict) -> str:
     """Nombre de fichero que identifica el objetivo sin ambiguedad.
 
@@ -701,7 +728,7 @@ def main() -> int:
         cfg["robustez"]["rotaciones"] = args.rotaciones
 
     fijar_seed(int(cfg["experimento"]["seed"]))
-    run = abrir_run(cfg)
+    run = abrir_run(cfg, nombre_run(cfg["objetivo"], args))
 
     imagen, historial = maximizar_activacion(cfg, run)
 
