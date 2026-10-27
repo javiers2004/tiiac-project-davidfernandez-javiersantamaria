@@ -40,3 +40,24 @@ def registrar(run: Any | None, metricas: dict, paso: int | None = None) -> None:
     """Registra metricas si hay run abierto. Silencioso si no."""
     if run is not None:
         run.log(metricas, step=paso)
+
+
+def registrar_imagen(run: Any | None, clave: str, imagen, paso: int | None = None,
+                     titulo: str = "") -> None:
+    """Sube una imagen al run, si hay run y si wandb esta disponible.
+
+    `imagen` es un tensor (3,H,W) o (N,3,H,W) en [0,1]. Con varias se suben
+    todas, que es lo que hace falta para una interpolacion o un lote diverso.
+
+    Aislado aqui por el mismo motivo que el resto del modulo: el codigo de
+    interpretabilidad no debe importar wandb ni saber si esta instalado.
+    """
+    if run is None:
+        return
+    try:
+        import wandb
+    except ImportError:
+        return
+
+    lote = imagen if imagen.dim() == 4 else imagen.unsqueeze(0)
+    run.log({clave: [wandb.Image(f, caption=titulo) for f in lote]}, step=paso)

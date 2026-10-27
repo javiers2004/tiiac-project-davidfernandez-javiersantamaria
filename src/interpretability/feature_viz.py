@@ -62,7 +62,8 @@ from src.interpretability.objetivos import (        # noqa: E402
     resolver_modulo,
 )
 from src.utils.seed import fijar_seed               # noqa: E402
-from src.utils.tracking import abrir_run, registrar  # noqa: E402
+from src.utils.tracking import (abrir_run, registrar,  # noqa: E402
+                                registrar_imagen)
 from src.utils.utils import load_model              # noqa: E402
 
 ARQUITECTURAS = {"resnet18": resnet18, "resnet50": resnet50, "resnet152": resnet152}
@@ -367,6 +368,9 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     desv = torch.tensor(ncfg["desviacion"], device=dispositivo).view(1, 3, 1, 1)
 
     pasos = int(pcfg["pasos"])
+    # 0 lo desactiva. Subir imagenes cuesta tiempo y espacio en el servidor,
+    # asi que por defecto van unas diez por run, no 256.
+    cada_imagen = int(cfg.get("wandb", {}).get("cada_imagen", 0) or 0)
     historial: list[float] = []
     try:
         for paso in range(pasos):
@@ -427,7 +431,20 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
             # .item() rompe el grafo: sin esto se acumula memoria.
             valor = metricas["viz/activacion"]
             historial.append(valor)
+            # La aspereza es lo que distingue un patron del ruido adversarial,
+            # y es lo que tienen que bajar los penalizadores de frecuencia.
+            # Sin ella, comparar dos runs obliga a mirar las imagenes a ojo.
+            metricas["viz/aspereza"] = _variacion_total(imagen).item()
             registrar(run, {**metricas, "viz/perdida": perdida.item()}, paso)
+
+            # La imagen cada cierto numero de pasos: es la figura
+            # Step 1 / 32 / 128 / 256 del articulo, generada sola. Sin esto
+            # el run solo tiene curvas y no se ve que salio.
+            if cada_imagen and (paso % cada_imagen == 0 or paso == pasos - 1):
+                with torch.no_grad():
+                    registrar_imagen(run, "viz/imagen",
+                                     parametrizacion().detach().cpu(), paso,
+                                     f"paso {paso}")
             if paso % max(1, pasos // 10) == 0:
                 print(f"paso {paso:4d}/{pasos}  activacion={valor:+.4f}")
 
