@@ -169,3 +169,7 @@ wandb:
   # 'disabled' no registra nada, 'offline' guarda en wandb/ para sincronizar
   # despues con `wandb sync`, y 'online' sube segun corre.
   modo: online
+  # Cada cuantos pasos se sube la imagen al run. Es la figura
+  # Step 1 / 32 / 128 / 256 del articulo, generada sola. 0 lo desactiva;
+  # subir 256 imagenes por run cuesta tiempo y espacio en el servidor.
+  cada_imagen: 32
