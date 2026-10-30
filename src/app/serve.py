@@ -34,6 +34,7 @@ sys.path.insert(0, str(RAIZ))
 
 from src.interpretability.api import (  # noqa: E402
     Activacion,
+    generar_deepdream,
     cargar_modelo,
     generar_imagen,
     listar_neuronas,
@@ -87,34 +88,30 @@ with st.sidebar:
     st.subheader("Controles del articulo")
     st.caption("Los nueve mandos de sus figuras interactivas.")
 
-    with st.form("parametros", border=False):
-        pasos = st.slider("Pasos de optimizacion", 32, 1024,
+    pasos = st.slider("Pasos de optimizacion", 32, 1024,
                           int(cfg["optimizacion"]["pasos"]), step=32,
                           help="El articulo usa 2560. Cada paso son unos 70 ms en CPU.")
-        lr = st.select_slider("Learning rate", [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5],
+    lr = st.select_slider("Learning rate", [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5],
                               value=float(cfg["optimizacion"]["learning_rate"]))
 
-        st.markdown("**Penalizadores de frecuencia**")
-        l1 = st.slider("L1", 0.0, 8.0, 0.0, step=0.25)
-        tv = st.slider("Variacion total", 0.0, 20.0, 0.0, step=0.5,
-                       help="El mas efectivo de los tres: baja la aspereza de 0.16 a 0.04.")
-        blur = st.slider("Desenfoque", 0.0, 200.0, 0.0, step=5.0)
+    st.markdown("**Penalizadores de frecuencia**")
+    l1 = st.slider("L1", 0.0, 8.0, 0.0, step=0.25)
+    tv = st.slider("Variacion total", 0.0, 20.0, 0.0, step=0.5,
+                   help="El mas efectivo de los tres: baja la aspereza de 0.16 a 0.04.")
+    blur = st.slider("Desenfoque", 0.0, 200.0, 0.0, step=5.0)
 
-        st.markdown("**Robustez a transformaciones**")
-        robustez = st.toggle("Activada", value=True,
-                             help="Apagarla sube la activacion y empeora la imagen. "
-                                  "Es el argumento central del articulo.")
-        jitter = st.slider("Jitter (px)", 0, 32, int(cfg["robustez"]["jitter"]))
-        rot = st.slider("Rotacion maxima (grados)", 0, 40, 5)
-        escala = st.slider("Amplitud de escala", 0.0, 0.4, 0.05, step=0.025)
+    st.markdown("**Robustez a transformaciones**")
+    robustez = st.toggle("Activada", value=True,
+                         help="Apagarla sube la activacion y empeora la imagen. "
+                              "Es el argumento central del articulo.")
+    jitter = st.slider("Jitter (px)", 0, 32, int(cfg["robustez"]["jitter"]))
+    rot = st.slider("Rotacion maxima (grados)", 0, 40, 5)
+    escala = st.slider("Amplitud de escala", 0.0, 0.4, 0.05, step=0.025)
 
-        st.markdown("**Preconditioning**")
-        precond = st.toggle("Espacio de Fourier decorrelado", value=True,
-                            help="Apagarlo optimiza los pixeles directamente "
-                                 "y converge a ruido adversarial.")
-
-        aplicado = st.form_submit_button("Aplicar parametros",
-                                         icon=":material/tune:", width="stretch")
+    st.markdown("**Preconditioning**")
+    precond = st.toggle("Espacio de Fourier decorrelado", value=True,
+                        help="Apagarlo optimiza los pixeles directamente "
+                             "y converge a ruido adversarial.")
 
     st.divider()
     st.subheader("Seguimiento")
@@ -152,6 +149,19 @@ capa = st.segmented_control("Capa", CAPAS, default="layer3.1.conv2",
                                  "unidades muertas al arrancar.")
 if capa is None:
     capa = "layer3.1.conv2"
+
+# Los objetivos del articulo. 'capa' no elige unidad: maximiza la capa entera.
+# 'logit' y 'probabilidad' solo tienen sentido en fc, donde el canal ES la clase.
+OBJETIVOS = {"canal": "Channel", "neurona": "Neuron", "capa": "Layer (DeepDream)",
+             "logit": "Class Logits", "probabilidad": "Class Probability"}
+disponibles = ([k for k in OBJETIVOS if k in ("logit", "probabilidad", "capa")]
+               if capa == "fc" else ["canal", "neurona", "capa"])
+tipo = st.segmented_control(
+    "Objetivo", disponibles, default=disponibles[0],
+    format_func=lambda k: OBJETIVOS[k],
+    help="Los objetivos de la seccion 'Optimization Objectives' del articulo.")
+if tipo is None:
+    tipo = disponibles[0]
 
 with st.spinner("Pasando la foto por el modelo..."):
     predicciones, neuronas, tensor = _analizar(foto_bytes, capa, 8)
@@ -207,7 +217,7 @@ with patron_col:
                        type="primary", width="stretch")
     st.caption(f"{pasos} pasos, unos {pasos * 0.07:.0f} s en CPU.")
 
-clave = (capa, elegida.canal, pasos, lr, l1, tv, blur, robustez, jitter, rot,
+clave = (capa, tipo, elegida.canal, pasos, lr, l1, tv, blur, robustez, jitter, rot,
          escala, precond)
 st.session_state.setdefault("patron", None)
 st.session_state.setdefault("clave_patron", None)
@@ -237,9 +247,16 @@ if lanzar:
                         alt="Vista previa de la optimizacion en curso")
 
     try:
-        imagen = generar_imagen(elegida, pasos=pasos, modelo=_modelo(), cfg=c,
-                                al_progresar=progreso,
-                                registrar=registrar_wandb)
+        if tipo == "capa":
+            # DeepDream no elige unidad: maximiza el cuadrado de la capa entera.
+            imagen = generar_deepdream(capa, pasos=pasos, modelo=_modelo(), cfg=c,
+                                       al_progresar=progreso,
+                                       registrar=registrar_wandb)
+        else:
+            imagen = generar_imagen(elegida, tipo=tipo, pasos=pasos,
+                                    modelo=_modelo(), cfg=c,
+                                    al_progresar=progreso,
+                                    registrar=registrar_wandb)
         st.session_state["patron"] = imagen[0].permute(1, 2, 0).numpy()
         st.session_state["clave_patron"] = clave
         if registrar_wandb:
