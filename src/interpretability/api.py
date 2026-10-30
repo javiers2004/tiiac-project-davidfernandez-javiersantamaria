@@ -28,7 +28,9 @@ from src.interpretability.feature_viz import (
     cargar_config,
     construir_modelo_congelado,
     maximizar_activacion,
+    nombre_salida,
 )
+from src.utils.tracking import abrir_run
 from src.interpretability.objetivos import (
     Canal,
     Capa,
@@ -254,7 +256,7 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
                    pasos: int | None = None,
                    modelo: nn.Module | None = None,
                    cfg: dict | None = None,
-                   al_progresar=None) -> torch.Tensor:
+                   al_progresar=None, registrar=False) -> torch.Tensor:
     """La foto que mas activa a esas neuronas, partiendo de ruido.
 
     Args:
@@ -302,15 +304,13 @@ def generar_imagen(neuronas: Activacion | list[Activacion],
 
     construir = POR_NEURONA[tipo]
     objetivo = Suma(tuple(construir(n.canal) for n in neuronas))
-    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=objetivo,
-                                     al_progresar=al_progresar)
-    return imagen
+    return _optimizar(cfg, objetivo, modelo, al_progresar, registrar)
 
 
 def generar_deepdream(capa: str, pasos: int | None = None,
                       modelo: nn.Module | None = None,
                       cfg: dict | None = None,
-                      al_progresar=None) -> torch.Tensor:
+                      al_progresar=None, registrar=False) -> torch.Tensor:
     """La foto que mas excita una capa ENTERA, partiendo de ruido.
 
     Es el objetivo Layer (DeepDream) del articulo. No se eligen neuronas, por
@@ -331,15 +331,13 @@ def generar_deepdream(capa: str, pasos: int | None = None,
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    imagen, _ = maximizar_activacion(cfg, modelo=modelo, objetivo=Capa(),
-                                     al_progresar=al_progresar)
-    return imagen
+    return _optimizar(cfg, Capa(), modelo, al_progresar, registrar)
 
 
 def generar_direccion(capa: str, semilla: int, pasos: int | None = None,
                       modelo: nn.Module | None = None,
                       cfg: dict | None = None,
-                      al_progresar=None) -> torch.Tensor:
+                      al_progresar=None, registrar=False) -> torch.Tensor:
     """La foto que mas empuja la capa en una direccion ALEATORIA.
 
     Es el objetivo Direction de "The Interaction between Neurons": en vez de
@@ -363,17 +361,15 @@ def generar_direccion(capa: str, semilla: int, pasos: int | None = None,
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    imagen, _ = maximizar_activacion(cfg, modelo=modelo,
-                                     objetivo=Direccion(int(semilla)),
-                                     al_progresar=al_progresar)
-    return imagen
+    return _optimizar(cfg, Direccion(int(semilla)), modelo, al_progresar,
+                      registrar)
 
 
 def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
                           pasos: int | None = None,
                           modelo: nn.Module | None = None,
                           cfg: dict | None = None,
-                          al_progresar=None) -> torch.Tensor:
+                          al_progresar=None, registrar=False) -> torch.Tensor:
     """Una fila de fotos que va de una neurona a otra.
 
     Es la interpolacion de "The Interaction between Neurons": la primera
@@ -403,10 +399,8 @@ def generar_interpolacion(desde: Activacion, hasta: Activacion, imagenes: int,
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    fila, _ = maximizar_activacion(
-        cfg, modelo=modelo, objetivo=Interpolacion(desde.canal, hasta.canal),
-        al_progresar=al_progresar)
-    return fila
+    return _optimizar(cfg, Interpolacion(desde.canal, hasta.canal), modelo,
+                      al_progresar, registrar)
 
 
 def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
@@ -415,7 +409,7 @@ def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
                      pasos: int | None = None,
                      modelo: nn.Module | None = None,
                      cfg: dict | None = None,
-                     al_progresar=None) -> torch.Tensor:
+                     al_progresar=None, registrar=False) -> torch.Tensor:
     """Varias fotos distintas que activan la MISMA neurona.
 
     Es la seccion "Diversity" del articulo: una sola optimizacion ensena una
@@ -455,10 +449,8 @@ def generar_diversas(neurona: Activacion, imagenes: int, tipo: str = "canal",
     if pasos is not None:
         cfg["optimizacion"] = {**cfg["optimizacion"], "pasos": int(pasos)}
 
-    fotos, _ = maximizar_activacion(
-        cfg, modelo=modelo, objetivo=POR_NEURONA[tipo](neurona.canal),
-        al_progresar=al_progresar)
-    return fotos
+    return _optimizar(cfg, POR_NEURONA[tipo](neurona.canal), modelo,
+                      al_progresar, registrar)
 
 
 @dataclass(frozen=True)
@@ -512,6 +504,29 @@ def ejemplos_del_dataset(neurona: Activacion, fotos: str | Path | list,
                for r in rutas]
     orden = sorted(zip(rutas, valores), key=lambda rv: rv[1], reverse=True)
     return [Ejemplo(r, v) for r, v in orden[:top_k]]
+
+
+def _optimizar(cfg: dict, objetivo, modelo, al_progresar, registrar=False):
+    """Lanza el bucle, y registra el run solo si se lo piden.
+
+    Hasta ahora la fachada no abria ninguno: solo lo hacia main() de
+    feature_viz.py, o sea la linea de comandos.
+
+    `registrar` es False por defecto a proposito. La fachada es una
+    biblioteca, y una biblioteca no debe abrir conexiones de red porque si:
+    con el YAML en 'online', cada llamada crearia un run sin que nadie lo
+    pidiera. Quien quiera registrar lo dice. Una vez dicho, el modo del YAML
+    decide si va online u offline.
+    """
+    run = abrir_run(cfg, nombre_salida(cfg["objetivo"])) if registrar else None
+    try:
+        imagen, _ = maximizar_activacion(cfg, run, modelo=modelo,
+                                         objetivo=objetivo,
+                                         al_progresar=al_progresar)
+    finally:
+        if run is not None:
+            run.finish()
+    return imagen
 
 
 def _por_canal(x: torch.Tensor, capa: str, modelo: nn.Module) -> torch.Tensor:

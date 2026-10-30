@@ -9,4 +9,6 @@ pyyaml==6.0.2
 wandb==0.18.7
 tqdm==4.67.1
 matplotlib==3.9.3
+# El aplicativo (src/app/serve.py). AGENTS.md lo nombra como opcion.
+streamlit==1.66.1
 pytest==8.3.4
