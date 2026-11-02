@@ -1,7 +1,7 @@
-"""Construccion del modelo.
+"""Modelo de juguete del smoke test de la plantilla (run.py).
 
-Aqui va tu replicacion. El objetivo de E1 es que el forward produzca las
-FORMAS que declara el paper, aunque los pesos sean aleatorios.
+El modelo de la replicacion es el ResNet-18 preentrenado, y lo carga
+construir_modelo_congelado() en src/interpretability/feature_viz.py.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import torch.nn as nn
 
 
 class ModeloPlaceholder(nn.Module):
-    """Sustituye esto por la arquitectura del paper."""
+    """Red minima para el smoke test."""
 
     def __init__(self, dim_entrada: int = 32, clases: int = 10):
         super().__init__()
