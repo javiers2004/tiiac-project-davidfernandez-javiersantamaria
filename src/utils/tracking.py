@@ -27,6 +27,12 @@ def abrir_run(cfg: dict, nombre: str | None = None) -> Any | None:
         print("aviso: wandb no esta instalado; se sigue sin registrar")
         return None
 
+    # Sin clave, wandb pregunta por terminal y, si no se tiene cuenta, revienta
+    # sin guardar nada. Reproducir una imagen no puede exigir una cuenta de W&B.
+    if wcfg.get("modo", "online") == "online" and not wandb.api.api_key:
+        print("aviso: sin clave de W&B (WANDB_API_KEY); se sigue sin registrar")
+        return None
+
     return wandb.init(
         project=wcfg.get("proyecto", "tiiac-2026"),
         entity=wcfg.get("entidad"),

@@ -212,3 +212,49 @@ def test_generar_diversas_da_imagenes_distintas(modelo, cfg):
     fotos = generar_diversas(Activacion(CAPA, 0, 0.0), imagenes=2, peso=50.0,
                              modelo=modelo, cfg=_cfg_rapida(cfg))
     assert not torch.allclose(fotos[0], fotos[1])
+
+
+# --- Seguimiento: sin clave de W&B tiene que funcionar igual ------------------
+
+def _sin_clave(monkeypatch, tmp_path):
+    """Un entorno sin WANDB_API_KEY y sin ~/.netrc, como el de quien clona."""
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("NETRC", str(tmp_path / "netrc"))
+
+
+def test_sin_clave_de_wandb_no_se_abre_run(monkeypatch, tmp_path, capsys):
+    """wandb.init sin clave pregunta por terminal y acaba reventando: quien
+    solo quiere reproducir una imagen se quedaba sin ella."""
+    import wandb
+    from src.utils.tracking import abrir_run
+
+    def no_llamar(**_):
+        raise AssertionError("no se puede llamar a wandb.init sin clave")
+
+    _sin_clave(monkeypatch, tmp_path)
+    monkeypatch.setattr(wandb, "init", no_llamar)
+    cfg = {"experimento": {"nombre": "t"}, "wandb": {"modo": "online"}}
+    assert abrir_run(cfg) is None
+    assert "WANDB_API_KEY" in capsys.readouterr().out
+
+
+def test_con_clave_de_wandb_se_abre_run(monkeypatch, tmp_path):
+    import wandb
+    from src.utils.tracking import abrir_run
+
+    _sin_clave(monkeypatch, tmp_path)
+    monkeypatch.setenv("WANDB_API_KEY", "x" * 40)
+    monkeypatch.setattr(wandb, "init", lambda **_: "run")
+    assert abrir_run({"experimento": {"nombre": "t"}, "wandb": {"modo": "online"}}) == "run"
+
+
+def test_el_modo_offline_no_necesita_clave(monkeypatch, tmp_path):
+    """offline guarda en local para sincronizar despues: la clave no hace falta."""
+    import wandb
+    from src.utils.tracking import abrir_run
+
+    _sin_clave(monkeypatch, tmp_path)
+    monkeypatch.setattr(wandb, "init", lambda **_: "run")
+    assert abrir_run({"experimento": {"nombre": "t"}, "wandb": {"modo": "offline"}}) == "run"
+

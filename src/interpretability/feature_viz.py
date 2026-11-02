@@ -762,6 +762,7 @@ def main() -> int:
 
     print(f"\nactivacion inicial: {historial[0]:+.4f}")
     print(f"activacion final  : {historial[-1]:+.4f}")
+    print(f"aspereza final    : {_variacion_total(imagen).item():.3f}")
     print(f"imagen guardada en: {fichero.relative_to(RAIZ)}")
 
     if run is not None:
