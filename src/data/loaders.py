@@ -1,4 +1,8 @@
-"""Carga de datos y splits.
+"""Datos del smoke test de la plantilla (run.py).
+
+El proyecto no entrena: optimiza imagenes con un modelo ya entrenado y congelado,
+asi que este modulo solo lo usa `python run.py --smoke`. Los datos reales, con los
+splits oficiales de Pl@ntNet-300K, se bajan con scripts/get_data.py.
 
 REGLAS QUE NO SE ROMPEN (y que el revisor del PR comprueba):
   1. El split se hace ANTES de cualquier transformacion ajustada a los datos.
@@ -14,12 +18,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 
 
 class DatasetPlaceholder(Dataset):
-    """Sustituye esto por el dataset de tu paper.
-
-    Se deja aqui un dataset sintetico para que `python run.py --smoke` funcione
-    desde el minuto cero, antes de que hayas escrito nada. Es lo que permite que
-    tengas el vertical slice en verde el primer dia.
-    """
+    """Dataset sintetico, para que `python run.py --smoke` no dependa de datos."""
 
     def __init__(self, n: int = 512, dim: int = 32, clases: int = 10):
         g = torch.Generator().manual_seed(0)

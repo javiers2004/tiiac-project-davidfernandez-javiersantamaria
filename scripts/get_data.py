@@ -5,7 +5,9 @@ Los datos NO van al repositorio. Lo que va es este script, con el checksum del
 fichero, de forma que cualquiera que clone obtenga exactamente los mismos
 bytes.
 
+    python scripts/get_data.py --pesos            # el checkpoint, 94 MB
     python scripts/get_data.py --solo-metadatos   # ~70 MB, en un minuto
+    python scripts/get_data.py --fotos 20         # unas fotos del test
     python scripts/get_data.py                    # el dataset entero, 31.7 GB
 
 Los metadatos van aparte a proposito. Pesan 70 MB frente a 31.7 GB y son todo
@@ -22,6 +24,7 @@ import hashlib
 import io
 import json
 import sys
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -37,6 +40,14 @@ NOMBRE = "plantnet_300K.zip"
 MD5 = "db27d149f2a6c304b887353c07021687"   # publicado por Zenodo
 
 BLOQUE = 4 << 20
+REINTENTOS = 4       # un zip remoto son cientos de peticiones: alguna falla
+
+# Pesos preentrenados, del enlace que da el README de plantnet/PlantNet-300K.
+# El MD5 se calculo sobre el fichero con el que se generaron los resultados.
+URL_PESOS = ("https://lab.plantnet.org/seafile/d/01ab6658dad6447c95ae/files/"
+             "?p=%2Fresnet18_weights_best_acc.tar&dl=1")
+PESOS = RAIZ / "models" / "resnet18_weights_best_acc.tar"
+MD5_PESOS = "68d6f66962841fefd2014e98cad6590e"
 
 
 class _FicheroHttp(io.RawIOBase):
@@ -54,8 +65,15 @@ class _FicheroHttp(io.RawIOBase):
             fin = min(inicio + BLOQUE, self.size) - 1
             peticion = urllib.request.Request(
                 self.url, headers={"Range": f"bytes={inicio}-{fin}"})
-            with urllib.request.urlopen(peticion) as r:
-                self.cache[indice] = r.read()
+            for intento in range(REINTENTOS):
+                try:
+                    with urllib.request.urlopen(peticion) as r:
+                        self.cache[indice] = r.read()
+                    break
+                except OSError:
+                    if intento == REINTENTOS - 1:
+                        raise
+                    time.sleep(2 ** intento)
         return self.cache[indice]
 
     def readinto(self, b) -> int:
@@ -196,6 +214,24 @@ def descargar_fotos(cuantas: int = 5) -> None:
             print(f"  ok  {salida.relative_to(RAIZ)}  ({salida.stat().st_size:,} B)")
 
 
+def descargar_pesos() -> int:
+    """Baja el checkpoint de ResNet-18 a models/ y verifica el MD5."""
+    PESOS.parent.mkdir(parents=True, exist_ok=True)
+    if not PESOS.exists():
+        print(f"descargando {PESOS.name} (94 MB)...")
+        urllib.request.urlretrieve(URL_PESOS, PESOS)
+
+    real = md5(PESOS)
+    if real != MD5_PESOS:
+        print(f"ERROR: el MD5 de {PESOS.name} no coincide.")
+        print(f"  esperado: {MD5_PESOS}")
+        print(f"  obtenido: {real}")
+        print("  Borra el fichero y repite la descarga.")
+        return 1
+    print(f"ok  {PESOS.relative_to(RAIZ)}  md5 verificado")
+    return 0
+
+
 def descargar_dataset() -> int:
     """Baja el zip entero y verifica el MD5."""
     DESTINO.mkdir(parents=True, exist_ok=True)
@@ -220,6 +256,9 @@ def descargar_dataset() -> int:
 
 
 def main() -> int:
+    if "--pesos" in sys.argv:
+        return descargar_pesos()
+
     if "--fotos" in sys.argv:
         i = sys.argv.index("--fotos")
         cuantas = int(sys.argv[i + 1]) if len(sys.argv) > i + 1 else 5

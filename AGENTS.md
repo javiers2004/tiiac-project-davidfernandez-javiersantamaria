@@ -14,8 +14,12 @@ Dos páginas se leen enteras. Quince, no.
 
 ## Qué es esto
 
-Replicación de <paper> sobre <dataset>. Objetivo: reproducir <métrica> = <valor>.
-Encima se construye <aplicativo>.
+Replicación de Olah, Mordvintsev y Schubert (2017), *Feature Visualization*, sobre
+un ResNet-18 preentrenado en Pl@ntNet-300K. El artículo no publica métricas: el
+objetivo es reproducir sus técnicas y sus figuras. Encima se construye una
+herramienta de inspección en Streamlit (`src/app/serve.py`).
+
+Los pesos no se entrenan. Lo que se optimiza es la imagen de entrada.
 
 ## Restricciones del curso
 
@@ -28,8 +32,10 @@ Encima se construye <aplicativo>.
 ## Cómo se ejecuta
 
 ```bash
-python run.py --smoke                          # pipeline entero en miniatura
-python run.py --config configs/default.yaml    # entrenamiento completo
+python scripts/get_data.py --pesos             # el checkpoint
+python -m src.interpretability.feature_viz --capa layer3.1.conv2 --canal 181
+streamlit run src/app/serve.py                 # el aplicativo
+python run.py --smoke                          # smoke test de la plantilla (modelo de juguete)
 pytest tests/ -q                               # tests
 python tools/tiiac_check.py .                  # comprobador de reproducibilidad
 ```
@@ -46,14 +52,13 @@ python tools/tiiac_check.py .                  # comprobador de reproducibilidad
 
 ## Lo que NO hay que tocar
 
-- `src/data/splits.py`: los splits están congelados desde el hito H3.
-- <lo que decidáis vosotros>
+- Los splits: son los oficiales de Pl@ntNet-300K.
 
 ## Estado actual
 
-<Actualiza esto cuando cambie. Es lo que evita que el asistente reinvente
-piezas que ya existen.>
+Actualiza esto cuando cambie. Es lo que evita que el asistente reinvente piezas
+que ya existen.
 
-- Hecho: <...>
-- En curso: <...>
-- Pendiente: <...>
+- Hecho: los objetivos, la interacción entre neuronas, la diversidad, la
+  regularización, el preconditioning y el aplicativo. La tabla está en el README.
+- Fuera de alcance: learned priors (GAN/VAE).

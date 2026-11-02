@@ -31,12 +31,14 @@ igualar, así que lo que se reproduce son sus **técnicas** y sus **figuras**.
 Como comprobación cuantitativa de que el checkpoint y el preprocesado son
 correctos —no como métrica del artículo— el clasificador acierta **80,0 % de
 top-1 y 95,0 % de top-5** sobre 120 fotos del split de test, una por especie,
-entre las 144 especies con 300 o más imágenes de entrenamiento.
+entre las 144 especies con 300 o más imágenes de entrenamiento. Se reproduce con
+`python scripts/get_data.py --fotos 120` y `python scripts/evaluar_fotos.py`.
 
 La reproducción del argumento central del artículo es medible: desactivando la
-robustez a transformaciones, la activación final **sube** de +5,01 a +6,98
-mientras la aspereza de la imagen empeora de 0,160 a 0,241. Mejor óptimo, peor
-imagen, que es exactamente lo que el artículo defiende.
+robustez a transformaciones (`--sin-robustez`), la activación final **sube** de
++4,93 a +7,15 mientras la aspereza de la imagen empeora de 0,164 a 0,245 (canal
+181 de `layer3.1.conv2`, en CPU). Mejor óptimo, peor imagen, que es exactamente lo
+que el artículo defiende. Las dos cifras se imprimen al terminar cada ejecución.
 
 ## Instalación
 
@@ -47,9 +49,15 @@ python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\ac
 pip install -r requirements.txt
 ```
 
-Los pesos preentrenados (`resnet18_weights_best_acc.tar` y compañía) se
-descargan del [repositorio oficial de Pl@ntNet-300K](https://github.com/plantnet/PlantNet-300K)
-y van en `models/`. No se versionan.
+Después, los pesos preentrenados. Sin ellos no funciona nada salvo los tests y el
+smoke test:
+
+```bash
+python scripts/get_data.py --pesos            #  94 MB · a models/, con MD5 verificado
+```
+
+Vienen del [repositorio oficial de Pl@ntNet-300K](https://github.com/plantnet/PlantNet-300K)
+y no se versionan.
 
 ## Datos
 
@@ -66,7 +74,22 @@ HTTP por rango: un zip guarda su índice al final, así que se leen unos 60 MB d
 
 Origen: [Zenodo, record 5645731](https://zenodo.org/records/5645731), versión
 1.1. 306 146 imágenes de 1081 especies. MD5 verificado por el script.
-Licencia del dataset: CC BY-SA 4.0 (ver la ficha de Zenodo).
+Licencia del dataset: CC BY 4.0 (ver la ficha de Zenodo).
+
+## Demostración
+
+Con los pesos descargados, y mejor con los metadatos y unas fotos, que dan los
+nombres de especie y las muestras:
+
+```bash
+streamlit run src/app/serve.py    # la interfaz web
+python scripts/demo.py            # el mismo recorrido, por terminal
+python scripts/sesion.py          # paso a paso, enseñando cada llamada a la API
+```
+
+Subes una foto o eliges una muestra, y ves qué especie predice el modelo, qué
+neuronas se activan, dónde se activan y qué patrón busca cada una. Los detalles
+están en [`docs/guia-demo.pdf`](docs/guia-demo.pdf).
 
 ## Ejecución
 
@@ -93,8 +116,10 @@ python -m src.interpretability.feature_viz --help
 python run.py --smoke
 ```
 
-Las imágenes salen en `outputs/feature_viz/` y cada ejecución queda registrada
-en W&B. Para subirlas hace falta la clave de API en el entorno:
+Las imágenes salen en `outputs/feature_viz/`. **No hace falta cuenta de W&B:** sin
+clave se avisa y se sigue sin registrar. Para registrar la ejecución, con la clave
+en el entorno (en una cuenta sin acceso al proyecto, cambia `wandb.entidad` en
+`configs/feature_viz.yaml`):
 
 ```bash
 WANDB_API_KEY=... python -m src.interpretability.feature_viz --canal 181
@@ -119,14 +144,19 @@ src/interpretability/
   feature_viz.py            El bucle, la parametrización y la robustez
   api.py                    La fachada que consume el aplicativo
 src/utils/                  Semillas, seguimiento de experimentos, utilidades
-scripts/get_data.py         Descarga del dataset, metadatos y fotos sueltas
-tests/                      130 tests de forma, invariancia y reproducibilidad
+src/app/serve.py            El aplicativo, en Streamlit
+scripts/get_data.py         Descarga de pesos, metadatos, fotos y dataset
+scripts/evaluar_fotos.py    El acierto del clasificador que cita este README
+scripts/demo.py, sesion.py  La demostración por terminal
+docs/                       Viabilidad, propuestas y guía de la demostración
+tests/                      133 tests de forma, invariancia y reproducibilidad
 run.py                      Punto de entrada de la plantilla (ver abajo)
 ```
 
 ## Reproducibilidad
 
-- Semilla fijada en `src/utils/seed.py`, valor en `configs/`.
+- Semilla fijada en `src/utils/seed.py`, valor en `configs/`. En CPU, entre procesos
+  distintos, la activación puede variar en torno a un 1 %.
 - Dependencias con versión exacta en `requirements.txt`.
 - **Presupuesto de cómputo:** una visualización de 256 pasos a 224×224 tarda
   **18 s en CPU** (torch 2.5.1, el entorno fijado) y **3,1 s en una GTX 1650
@@ -160,7 +190,7 @@ run.py                      Punto de entrada de la plantilla (ver abajo)
 pytest tests/ -q
 ```
 
-130 tests. No dependen de los `.tar`: usan un ResNet-18 sin entrenar, porque
+133 tests. No dependen de los `.tar`: usan un ResNet-18 sin entrenar, porque
 los pesos están en `.gitignore` y en integración continua no existen.
 
 ## Uso de IA
