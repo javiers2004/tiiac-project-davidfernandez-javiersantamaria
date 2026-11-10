@@ -42,3 +42,13 @@ Thumbs.db
 
 # ---- salidas de interpretabilidad ----
 outputs/
+
+# ---- intermedios de LaTeX (docs/informe-tecnico.tex) ----
+# El .tex y el .pdf SI se versionan; lo que genera latexmk al compilar, no.
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
