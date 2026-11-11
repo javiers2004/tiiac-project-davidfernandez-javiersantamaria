@@ -71,7 +71,7 @@ Sus parámetros no se pueden leer directamente, y saber qué ha aprendido cada
 una de sus unidades internas es un problema abierto de la
 interpretabilidad. Una forma de abordarlo es mirar qué fotografías del
 conjunto de datos activan más una unidad. Otra, la que se estudia en este
-trabajo, es construir esas fotografías: partir de ruido y modificar la
+trabajo, es construir esas fotografías: partiendo de ruido y modificando la
 imagen de entrada, mediante descenso por gradiente, hasta que la unidad
 elegida responda todo lo posible. La imagen resultante muestra el patrón que
 esa unidad detecta.
@@ -759,10 +759,13 @@ reales o es un producto de la optimización.
 \section{Métricas}
 \label{sec:metricas}
 
-\paragraph{Activación.} Es el valor del objetivo $h$. Durante la
-optimización se registra en cada paso, sobre la imagen transformada
-aleatoriamente, por lo que la curva es ruidosa; el valor final se mide una
-vez sobre la imagen sin transformar. Su escala depende de la capa y del
+\paragraph{Activación.} Es el valor del objetivo $h$. Se registra en cada
+paso de la optimización, sobre la imagen transformada aleatoriamente, por lo
+que la curva es ruidosa; el valor que se da como final es el del último
+paso. Con la robustez activa esa medida se toma, por tanto, sobre una vista
+transformada: evaluar en su lugar la imagen final sin transformar cambia el
+resultado en menos del 1\,\%, precisamente porque el patrón está optimizado
+para resistir esas transformaciones. Su escala depende de la capa y del
 objetivo, de modo que solo es comparable entre ejecuciones con el mismo
 objetivo.
 
@@ -901,7 +904,7 @@ también aumenta la aspereza de la imagen final.
 
 El artículo aplica sus técnicas a una red GoogLeNet entrenada en ImageNet;
 este trabajo las aplica a redes ResNet entrenadas en Pl@ntNet-300K. El número
-de pasos se ha reducido de 2560 a 256 por coste, y puede restablecerse desde
+de pasos se ha reducido de 2560 a 256 por coste, pero puede restablecerse desde
 la configuración. Los pesos de las penalizaciones de las figuras del
 artículo no son trasladables, porque allí las penalizaciones se suman sobre
 todos los elementos de la imagen y aquí se promedian. Por la misma razón,

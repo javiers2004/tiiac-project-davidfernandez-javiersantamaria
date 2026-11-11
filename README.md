@@ -89,7 +89,7 @@ python scripts/sesion.py          # paso a paso, enseñando cada llamada a la AP
 
 Subes una foto o eliges una muestra, y ves qué especie predice el modelo, qué
 neuronas se activan, dónde se activan y qué patrón busca cada una. Los detalles
-están en [`docs/guia-demo.pdf`](docs/guia-demo.pdf).
+están en [`docs/informe-tecnico-v2.pdf`](docs/informe-tecnico-v2.pdf).
 
 ## Ejecución
 
