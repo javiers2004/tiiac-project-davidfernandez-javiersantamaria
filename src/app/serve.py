@@ -44,6 +44,8 @@ from src.interpretability.api import (  # noqa: E402
 )
 from src.interpretability.feature_viz import UnidadMuerta, cargar_config  # noqa: E402
 from src.interpretability.objetivos import inspeccionar_capa  # noqa: E402
+from src.app.graficos import (  # noqa: E402
+    PARAM_CANAL, PARAM_ETAPA, espec_red)
 
 # Convoluciones pre-ReLU. Las salidas de bloque (layer3 a secas) son post-ReLU
 # y arrancan en cero en mas de la mitad de las posiciones de layer4: elegir una
@@ -62,18 +64,63 @@ def _modelo():
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
-def _analizar(foto_bytes: bytes, capa: str, top_k: int):
-    """Prediccion y ranking de neuronas. Se cachea por foto y capa.
+def _analizar(foto_bytes: bytes, capa: str):
+    """Prediccion y activacion de TODOS los canales. Se cachea por foto y capa.
 
     Recibe los bytes y no el fichero subido porque st.cache_data necesita un
     argumento hasheable; el objeto de Streamlit no lo es.
+
+    Devuelve el ranking (de mayor a menor, que es lo que hace falta para
+    destacar los mas activos) y los mismos valores en orden de indice de
+    canal, que es lo que necesita la rejilla pulsable.
     """
     foto = Image.open(io.BytesIO(foto_bytes)).convert("RGB")
     m = _modelo()
     tensor = torch.from_numpy(np.array(foto)).permute(2, 0, 1).float().div(255)[None]
     predicciones = predecir(tensor, top_k=3, modelo=m)
-    neuronas = listar_neuronas(tensor, capas=capa, top_k=top_k, modelo=m)
-    return predicciones, neuronas, tensor
+    # Un top_k por encima del numero de canales: listar_neuronas lo recorta.
+    ranking = listar_neuronas(tensor, capas=capa, top_k=10_000, modelo=m)
+    valores = [0.0] * len(ranking)
+    for a in ranking:
+        valores[a.canal] = a.valor
+    return predicciones, ranking, valores, tensor
+
+
+@st.cache_data(show_spinner=False)
+def _formas(tamano: int):
+    """Forma de salida de cada capa seleccionable, para dibujar la red."""
+    m = _modelo()
+    salida = []
+    for c in CAPAS:
+        f = inspeccionar_capa(m, c, tamano)
+        salida.append({
+            "capa": c,
+            "corta": c.split(".")[0],
+            "canales": f.canales,
+            "lado": f.alto if f.es_espacial else 0,
+            "forma": (f"{f.canales} x {f.alto} x {f.ancho}" if f.es_espacial
+                      else f"{f.canales} clases"),
+        })
+    return salida
+
+
+def _seleccion(evento, parametro: str, campo: str):
+    """Saca el valor pulsado de un grafico, o None si no se pulso nada.
+
+    La forma del evento depende de la version, asi que en vez de confiar en
+    una se comprueban las dos que devuelve Streamlit: una lista de filas, o
+    un diccionario de columnas.
+    """
+    try:
+        sel = evento.selection[parametro]
+    except (AttributeError, KeyError, TypeError):
+        return None
+    if isinstance(sel, dict):
+        valores = sel.get(campo) or []
+        return valores[0] if valores else None
+    if isinstance(sel, list) and sel:
+        return sel[0].get(campo) if isinstance(sel[0], dict) else None
+    return None
 
 
 st.title("Visualizacion de caracteristicas")
@@ -143,12 +190,20 @@ else:
             icon=":material/photo_camera:")
     st.stop()
 
-capa = st.segmented_control("Capa", CAPAS, default="layer3.1.conv2",
-                            help="Todas son convoluciones pre-ReLU salvo fc. "
-                                 "Las salidas de bloque tienen la mitad de las "
-                                 "unidades muertas al arrancar.")
-if capa is None:
-    capa = "layer3.1.conv2"
+st.subheader("La red, por etapas")
+st.caption("Pulsa una etapa para inspeccionarla. La altura es el lado de su "
+           "mapa de activacion y el color, cuantos canales tiene: la "
+           "resolucion cae de 56 a 7 mientras los canales pasan de 64 a 512. "
+           "Todas son convoluciones pre-ReLU salvo fc.")
+
+st.session_state.setdefault("capa_sel", "layer3.1.conv2")
+capa = st.session_state["capa_sel"]
+
+# El grafico se pinta DENTRO de este hueco, pero mas abajo en el script: la
+# etapa abierta lleva su mapa de activacion dentro, y el mapa no se conoce
+# hasta haber elegido el canal. Reservar el sitio aqui mantiene el orden de
+# la pagina sin obligar a calcularlo todo antes de tiempo.
+hueco_red = st.container()
 
 # Los objetivos del articulo. 'capa' no elige unidad: maximiza la capa entera.
 # 'logit' y 'probabilidad' solo tienen sentido en fc, donde el canal ES la clase.
@@ -164,7 +219,7 @@ if tipo is None:
     tipo = disponibles[0]
 
 with st.spinner("Pasando la foto por el modelo..."):
-    predicciones, neuronas, tensor = _analizar(foto_bytes, capa, 8)
+    predicciones, ranking, valores, tensor = _analizar(foto_bytes, capa)
 
 # ------------------------------------------------------- prediccion y neuronas
 izq, der = st.columns([1, 1])
@@ -185,13 +240,63 @@ with der:
                + (f", mapa de {forma.alto}x{forma.ancho}" if forma.es_espacial
                   else ", sin extension espacial"))
 
-    etiquetas = [f"{a.canal} ({a.valor:+.2f})" for a in neuronas]
-    elegida_txt = st.radio("Elige una neurona", etiquetas, index=0,
-                           label_visibility="collapsed")
-    elegida: Activacion = neuronas[etiquetas.index(elegida_txt)]
+    top = ranking[:8]
+    destacados = {a.canal for a in top}
+    st.session_state.setdefault("canal_sel", top[0].canal)
+    # Al cambiar de capa el canal elegido puede no existir en la nueva.
+    if not 0 <= st.session_state["canal_sel"] < len(valores):
+        st.session_state["canal_sel"] = top[0].canal
+    canal = st.session_state["canal_sel"]
 
-    st.caption("El orden solo es comparable dentro de una capa: layer1 activa "
-               "de media cuatro veces mas que layer3.")
+    if not forma.es_espacial:
+        # fc tiene 1081 canales, que son las clases: una rejilla de 1081
+        # celdas dentro de la etapa no se puede pulsar. Ahi la lista sigue
+        # siendo lo mejor.
+        etiquetas = [f"{a.canal} ({a.valor:+.2f})" for a in top]
+        elegida_txt = st.radio("Elige una clase", etiquetas, index=0,
+                               label_visibility="collapsed")
+        canal = top[etiquetas.index(elegida_txt)].canal
+        st.session_state["canal_sel"] = canal
+    else:
+        # La rejilla va dentro de la etapa abierta, arriba. Aqui solo las
+        # cifras del ranking, que en la rejilla solo salen al pasar por
+        # encima.
+        st.caption("Las ocho mas activas, que en la rejilla de arriba van "
+                   "con borde:")
+        for a in top:
+            marca = "**" if a.canal == canal else ""
+            st.caption(f"{marca}canal {a.canal} — {a.valor:+.3f}{marca}")
+
+    elegida = Activacion(capa, int(canal), float(valores[int(canal)]))
+    st.caption(f"Elegido el canal **{elegida.canal}**, activacion "
+               f"{elegida.valor:+.3f}. El orden solo es comparable dentro de "
+               "una capa: layer1 activa de media cuatro veces mas que layer3.")
+
+# --------------------------------------------- la red, ya con sus canales
+# Se dibuja aqui, en el hueco reservado arriba, porque la etapa abierta
+# lleva dentro la rejilla de canales y esa no se conoce hasta haber hecho
+# la pasada por el modelo.
+#
+# La clave lleva la capa a proposito: con una clave fija, al volver a
+# ejecutarse el script Streamlit reutiliza el elemento y el dibujo se queda
+# en la etapa anterior aunque el resto de la pagina ya haya cambiado.
+_ev_red = hueco_red.vega_lite_chart(
+    espec_red(_formas(int(cfg["imagen"]["tamano"])), capa,
+              valores if forma.es_espacial else None,
+              int(canal), destacados),
+    on_select="rerun", key=f"grafico_red_{capa}")
+
+_pulsada = _seleccion(_ev_red, PARAM_ETAPA, "capa")
+if _pulsada and _pulsada != capa:
+    st.session_state["capa_sel"] = _pulsada
+    # Otra capa tiene otros canales: el que estuviera elegido ya no vale.
+    st.session_state.pop("canal_sel", None)
+    st.rerun()
+
+_pulsado = _seleccion(_ev_red, PARAM_CANAL, "canal")
+if _pulsado is not None and int(_pulsado) != int(canal):
+    st.session_state["canal_sel"] = int(_pulsado)
+    st.rerun()
 
 # -------------------------------------------------------------- mapa y patron
 st.divider()
