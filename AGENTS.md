@@ -17,7 +17,8 @@ Dos páginas se leen enteras. Quince, no.
 Replicación de Olah, Mordvintsev y Schubert (2017), *Feature Visualization*, sobre
 un ResNet-18 preentrenado en Pl@ntNet-300K. El artículo no publica métricas: el
 objetivo es reproducir sus técnicas y sus figuras. Encima se construye una
-herramienta de inspección en Streamlit (`src/app/serve.py`).
+interfaz web de inspección (`src/app/serve.py`, sin framework: biblioteca
+estándar y una página con Preact incluido).
 
 Los pesos no se entrenan. Lo que se optimiza es la imagen de entrada.
 
@@ -32,9 +33,9 @@ Los pesos no se entrenan. Lo que se optimiza es la imagen de entrada.
 ## Cómo se ejecuta
 
 ```bash
-python scripts/get_data.py --pesos             # el checkpoint
+python scripts/get_data.py --pesos todos       # los checkpoints (ResNet-18, 50 y 152)
 python -m src.interpretability.feature_viz --capa layer3.1.conv2 --canal 181
-streamlit run src/app/serve.py                 # el aplicativo
+python -m src.app.serve                        # el aplicativo, en http://127.0.0.1:8501
 python run.py --smoke                          # smoke test de la plantilla (modelo de juguete)
 pytest tests/ -q                               # tests
 python tools/tiiac_check.py .                  # comprobador de reproducibilidad
@@ -61,4 +62,9 @@ que ya existen.
 
 - Hecho: los objetivos, la interacción entre neuronas, la diversidad, la
   regularización, el preconditioning y el aplicativo. La tabla está en el README.
+- El aplicativo es la interfaz diseñada en Claude Design ("Inspector de
+  neuronas", v13) portada tal cual a `src/app/static/`. La lógica de la página
+  está en `app.js`; las reglas (qué capa es cada bloque, qué objetivo sale de
+  cada selección, cómo se traducen los mandos al YAML) en `src/app/servicio.py`.
+  Rangos de los mandos y checkpoints de cada modelo en `configs/app.yaml`.
 - Fuera de alcance: learned priors (GAN/VAE).

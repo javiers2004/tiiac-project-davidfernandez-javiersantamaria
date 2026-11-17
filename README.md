@@ -54,6 +54,7 @@ smoke test:
 
 ```bash
 python scripts/get_data.py --pesos            #  94 MB · a models/, con MD5 verificado
+python scripts/get_data.py --pesos todos      # + ResNet-50 y 152 (690 MB), para el selector de modelo
 ```
 
 Vienen del [repositorio oficial de Pl@ntNet-300K](https://github.com/plantnet/PlantNet-300K)
@@ -82,13 +83,17 @@ Con los pesos descargados, y mejor con los metadatos y unas fotos, que dan los
 nombres de especie y las muestras:
 
 ```bash
-streamlit run src/app/serve.py    # la interfaz web
+python -m src.app.serve           # la interfaz web, en http://127.0.0.1:8501
 python scripts/demo.py            # el mismo recorrido, por terminal
 python scripts/sesion.py          # paso a paso, enseñando cada llamada a la API
 ```
 
 Subes una foto o eliges una muestra, y ves qué especie predice el modelo, qué
-neuronas se activan, dónde se activan y qué patrón busca cada una. Los detalles
+neuronas se activan, dónde se activan y qué patrón busca cada una. La red se
+recorre en un diagrama 3D: una etapa entera (DeepDream), uno o varios canales,
+o una sola neurona con su campo receptivo, en ResNet-18, 50 o 152 y en
+cualquier bloque de cada etapa. La optimización enseña sus pasos intermedios y
+sus métricas (activación, aspereza y cambio por paso) mientras corre. Los detalles
 están en [`docs/informe-tecnico-v2.pdf`](docs/informe-tecnico-v2.pdf).
 
 ## Ejecución
@@ -144,12 +149,14 @@ src/interpretability/
   feature_viz.py            El bucle, la parametrización y la robustez
   api.py                    La fachada que consume el aplicativo
 src/utils/                  Semillas, seguimiento de experimentos, utilidades
-src/app/serve.py            El aplicativo, en Streamlit
+src/app/serve.py            El aplicativo: servidor HTTP y API (biblioteca estándar)
+src/app/servicio.py         Lo que pide la interfaz, sin HTTP: análisis, mapas, optimizaciones
+src/app/static/             La interfaz (HTML, CSS y JS con Preact incluido)
 scripts/get_data.py         Descarga de pesos, metadatos, fotos y dataset
 scripts/evaluar_fotos.py    El acierto del clasificador que cita este README
 scripts/demo.py, sesion.py  La demostración por terminal
 docs/                       Viabilidad, propuestas y guía de la demostración
-tests/                      133 tests de forma, invariancia y reproducibilidad
+tests/                      159 tests de forma, invariancia y reproducibilidad
 run.py                      Punto de entrada de la plantilla (ver abajo)
 ```
 
@@ -190,7 +197,7 @@ run.py                      Punto de entrada de la plantilla (ver abajo)
 pytest tests/ -q
 ```
 
-133 tests. No dependen de los `.tar`: usan un ResNet-18 sin entrenar, porque
+159 tests. No dependen de los `.tar`: usan un ResNet-18 sin entrenar, porque
 los pesos están en `.gitignore` y en integración continua no existen.
 
 ## Uso de IA
