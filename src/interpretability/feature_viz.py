@@ -300,7 +300,13 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
         la activacion alcanzada en cada paso. lote sale de imagen.lote en el
         YAML y es 1 si no esta.
     """
-    dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # 'auto' (o sin la clave) usa la GPU si la hay; la interfaz puede forzar 'cpu' o 'cuda'.
+    pedido = str(cfg["optimizacion"].get("dispositivo", "auto"))
+    if pedido == "auto":
+        pedido = "cuda" if torch.cuda.is_available() else "cpu"
+    if pedido == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("se ha pedido la GPU pero torch no ve ninguna (torch.cuda.is_available() es False)")
+    dispositivo = torch.device(pedido)
     if modelo is None:
         modelo = construir_modelo_congelado(cfg["modelo"])
     modelo = modelo.to(dispositivo)
