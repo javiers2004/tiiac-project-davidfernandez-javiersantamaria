@@ -5,7 +5,8 @@ Los datos NO van al repositorio. Lo que va es este script, con el checksum del
 fichero, de forma que cualquiera que clone obtenga exactamente los mismos
 bytes.
 
-    python scripts/get_data.py --pesos            # el checkpoint, 94 MB
+    python scripts/get_data.py --pesos            # el checkpoint de ResNet-18, 94 MB
+    python scripts/get_data.py --pesos resnet50   # o resnet152, o todos (la app usa los tres)
     python scripts/get_data.py --solo-metadatos   # ~70 MB, en un minuto
     python scripts/get_data.py --fotos 20         # unas fotos del test
     python scripts/get_data.py                    # el dataset entero, 31.7 GB
@@ -44,10 +45,15 @@ REINTENTOS = 4       # un zip remoto son cientos de peticiones: alguna falla
 
 # Pesos preentrenados, del enlace que da el README de plantnet/PlantNet-300K.
 # El MD5 se calculo sobre el fichero con el que se generaron los resultados.
+# Los otros dos tamanos que publica el mismo repo, para el selector de modelo
+# de la aplicacion. Sus MD5 se calcularon sobre la descarga de ese servidor.
 URL_PESOS = ("https://lab.plantnet.org/seafile/d/01ab6658dad6447c95ae/files/"
-             "?p=%2Fresnet18_weights_best_acc.tar&dl=1")
-PESOS = RAIZ / "models" / "resnet18_weights_best_acc.tar"
-MD5_PESOS = "68d6f66962841fefd2014e98cad6590e"
+             "?p=%2F{arq}_weights_best_acc.tar&dl=1")
+PESOS = {
+    "resnet18": ("68d6f66962841fefd2014e98cad6590e", "94 MB"),
+    "resnet50": ("97cbfab0dacbbe43b16aa60e09f52f7c", "206 MB"),
+    "resnet152": ("dc21a2c18fa008bb64fdaff5bea9cbee", "484 MB"),
+}
 
 
 class _FicheroHttp(io.RawIOBase):
@@ -214,21 +220,26 @@ def descargar_fotos(cuantas: int = 5) -> None:
             print(f"  ok  {salida.relative_to(RAIZ)}  ({salida.stat().st_size:,} B)")
 
 
-def descargar_pesos() -> int:
-    """Baja el checkpoint de ResNet-18 a models/ y verifica el MD5."""
-    PESOS.parent.mkdir(parents=True, exist_ok=True)
-    if not PESOS.exists():
-        print(f"descargando {PESOS.name} (94 MB)...")
-        urllib.request.urlretrieve(URL_PESOS, PESOS)
+def descargar_pesos(arq: str = "resnet18") -> int:
+    """Baja el checkpoint de esa arquitectura a models/ y verifica el MD5."""
+    if arq not in PESOS:
+        print(f"arquitectura desconocida: {arq}. Opciones: {', '.join(PESOS)} o todos")
+        return 1
+    esperado, tamano = PESOS[arq]
+    ruta = RAIZ / "models" / f"{arq}_weights_best_acc.tar"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    if not ruta.exists():
+        print(f"descargando {ruta.name} ({tamano})...")
+        urllib.request.urlretrieve(URL_PESOS.format(arq=arq), ruta)
 
-    real = md5(PESOS)
-    if real != MD5_PESOS:
-        print(f"ERROR: el MD5 de {PESOS.name} no coincide.")
-        print(f"  esperado: {MD5_PESOS}")
+    real = md5(ruta)
+    if real != esperado:
+        print(f"ERROR: el MD5 de {ruta.name} no coincide.")
+        print(f"  esperado: {esperado}")
         print(f"  obtenido: {real}")
         print("  Borra el fichero y repite la descarga.")
         return 1
-    print(f"ok  {PESOS.relative_to(RAIZ)}  md5 verificado")
+    print(f"ok  {ruta.relative_to(RAIZ)}  md5 verificado")
     return 0
 
 
@@ -257,7 +268,11 @@ def descargar_dataset() -> int:
 
 def main() -> int:
     if "--pesos" in sys.argv:
-        return descargar_pesos()
+        i = sys.argv.index("--pesos")
+        arq = sys.argv[i + 1] if len(sys.argv) > i + 1 and not sys.argv[i + 1].startswith("-") else "resnet18"
+        if arq == "todos":
+            return max(descargar_pesos(a) for a in PESOS)
+        return descargar_pesos(arq)
 
     if "--fotos" in sys.argv:
         i = sys.argv.index("--fotos")

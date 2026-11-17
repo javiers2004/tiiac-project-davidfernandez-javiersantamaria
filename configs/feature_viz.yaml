@@ -73,6 +73,9 @@ optimizacion:
   # ~2.9 min, y un barrido de 16 canales pasa de 5 a 45 minutos. Para las
   # imagenes de la memoria, subirlo a 2560.
   pasos: 256
+  # 'auto' usa la GPU si torch la ve; 'cpu' o 'cuda' la fuerzan. La aplicacion
+  # lo cambia con su selector de dispositivo.
+  dispositivo: auto
 
 regularizacion:
   # Los tres penalizadores de frecuencia de "Three Families of

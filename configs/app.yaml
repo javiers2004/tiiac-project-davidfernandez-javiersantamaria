@@ -1,0 +1,50 @@
+# Configuracion del aplicativo (src/app/serve.py).
+#
+#   python -m src.app.serve
+#
+# Los hiperparametros de la optimizacion NO van aqui: salen de
+# configs/feature_viz.yaml, que es la fuente de los valores por defecto de
+# todos los mandos. Aqui solo va lo propio de la interfaz: que modelos ofrece,
+# los rangos de los deslizadores y donde estan las fotos.
+
+servidor:
+  host: 127.0.0.1
+  puerto: 8501
+
+# Los tres tamanos del selector de modelo. Se bajan con
+#   python scripts/get_data.py --pesos todos
+# Si falta un checkpoint, su boton sale apagado en vez de desaparecer.
+modelos:
+  resnet18:
+    etiqueta: ResNet-18
+    checkpoint: models/resnet18_weights_best_acc.tar
+  resnet50:
+    etiqueta: ResNet-50
+    checkpoint: models/resnet50_weights_best_acc.tar
+  resnet152:
+    etiqueta: ResNet-152
+    checkpoint: models/resnet152_weights_best_acc.tar
+modelo_inicial: resnet18
+
+# La foto con la que arranca la aplicacion, y la carpeta del desplegable
+# "O elige una del conjunto de test" (python scripts/get_data.py --fotos 20).
+foto_inicial: docs/figuras/foto.png
+muestras: data/muestras
+
+# Cuantas imagenes intermedias se guardan de cada optimizacion. Los pasos que
+# elija el usuario se reparten entre ellas: con 1000 pasos y 4 capturas salen
+# a los 250, 500, 750 y 1000.
+capturas: 4
+
+# Rangos de los deslizadores. El valor inicial de cada uno es el del YAML de la
+# optimizacion. 'log' reparte el recorrido en escala logaritmica.
+rangos:
+  pasos:        {min: 32,    max: 1024,  paso: 32}
+  learning_rate: {min: 0.005, max: 0.5,   escala: log}
+  l1:           {min: 0.0,   max: 8.0,   paso: 0.05}
+  tv:           {min: 0.0,   max: 20.0,  paso: 0.1}
+  blur:         {min: 0.0,   max: 200.0, paso: 1.0}
+  jitter:       {min: 0,     max: 32,    paso: 1}
+  rotacion:     {min: 0,     max: 40,    paso: 1}
+  escala:       {min: 0.0,   max: 0.4,   paso: 0.01}
+  decay_power:  {min: 0.0,   max: 2.0,   paso: 0.05}
