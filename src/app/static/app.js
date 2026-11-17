@@ -528,6 +528,27 @@ class App extends Component {
       return n ? n[0] + (n[1] ? ' ' + n[1] : '') : '';
     }
     function fmt(v) { return (v >= 0 ? '+' : '') + v.toFixed(3); }
+    // Una decima mientras se vea algo, que es como lo da el panel de
+    // especies. Por debajo de 0.1 % una decima lo deja todo en "0.0%" y tres
+    // clases con logits bien distintos parecen la misma: ahi se pasa a dos
+    // cifras significativas.
+    function pct(p) {
+      var v = p * 100;
+      if (v >= 0.1) return v.toFixed(1) + '%';
+      if (v >= 0.0001) return v.toPrecision(2) + '%';
+      // Mas abajo toPrecision pasa a notacion exponencial y se lee peor que
+      // un tope.
+      return v > 0 ? '<0.0001%' : '0%';
+    }
+    // La probabilidad de una clase a partir de TODOS los logits de fc. Se
+    // resta el maximo antes de exponenciar: sin eso, un logit alto desborda.
+    function softmax(logits, i) {
+      var m = logits[0], k;
+      for (k = 1; k < logits.length; k++) { if (logits[k] > m) m = logits[k]; }
+      var suma = 0;
+      for (k = 0; k < logits.length; k++) { suma += Math.exp(logits[k] - m); }
+      return Math.exp(logits[i] - m) / suma;
+    }
     var esFc = bS.lado === 0;
     if (etapa) {
       var n = etapa.canales, cols = etapa.cols, filas = Math.ceil(n / cols);
@@ -582,6 +603,11 @@ class App extends Component {
     // fc: la especie de la clase elegida (o, con varias, de la ultima marcada) va en la cabecera del panel.
     var claseFc = !esFc ? -1 : obj === 'multi' ? (marcados.length ? marcados[marcados.length - 1] : -1) : st.elegidos[sel];
     var nombreFc = claseFc >= 0 && st.nombres ? st.nombres[claseFc] : null;
+    // Y su probabilidad al lado, para no obligar a cruzarla con el panel de
+    // especies. Sale del softmax de los logits de la propia etapa, que ya
+    // estan todos aqui: da la misma cifra que top5 y vale para CUALQUIER
+    // clase, no solo para las cinco mas probables.
+    var probFc = claseFc >= 0 && etapa ? softmax(etapa.valores, claseFc) : -1;
     // ---- la tira de bloques de la etapa elegida
     var tira = [], tiraTexto = '', hayTira = !!(bS.hojas && bS.nBloques > 1 && st.datos);
     if (hayTira) {
@@ -782,25 +808,36 @@ class App extends Component {
     var lr = function (v) { return String(Number(Number(v).toPrecision(2))); };
     var secciones = !st.params ? [] : [
       seccion('opt', 'Optimizacion', P.pasos + ' pasos · lr ' + lr(P.learning_rate) + ' · semilla ' + P.semilla, [
-        slider('pasos', 'Pasos de optimizacion', entero, true),
-        slider('learning_rate', 'Learning rate', lr, false),
-        texto('semilla', 'semilla', 'Semilla', true)
+        slider('pasos', 'Pasos de optimizacion', entero,
+               'Cuantas veces se corrige la imagen. El articulo usa 2560; con 256 sale algo menos refinada, y subirlo recupera su fidelidad sin tocar nada mas.'),
+        slider('learning_rate', 'Learning rate', lr,
+               'El paso de Adam. Actua sobre el espectro de Fourier, no sobre los pixeles.'),
+        texto('semilla', 'semilla', 'Semilla',
+              'Fija el ruido del que se parte. Con la misma semilla y los mismos mandos sale la misma imagen.')
       ]),
       seccion('frec', 'Penalizadores de frecuencia', 'L1 ' + dos(P.l1) + ' · variacion total ' + dos(P.tv) + ' · desenfoque ' + dos(P.blur), [
-        slider('l1', 'L1', dos, false),
-        slider('tv', 'Variacion total', dos, true),
-        slider('blur', 'Desenfoque', dos, false)
+        slider('l1', 'L1', dos,
+               'Penaliza la media de |imagen|: empuja los valores hacia cero. Es la mas floja de las tres.'),
+        slider('tv', 'Variacion total', dos,
+               'Mide la diferencia entre pixeles vecinos, que es justo lo que sube con el ruido. La mas efectiva de las tres.'),
+        slider('blur', 'Desenfoque', dos,
+               'Distancia a la version desenfocada de la imagen: minimizarla equivale a desenfocarla un poco en cada paso.')
       ]),
       seccion('rob', 'Robustez a transformaciones', fl.robustez ? 'jitter ' + P.jitter + ' px · rotacion ' + P.rotacion + '° · escala ' + dos(P.escala) : 'desactivada', [
         toggle('Activada', 'robustez'),
-        slider('jitter', 'Jitter (px)', entero, false, !fl.robustez),
-        slider('rotacion', 'Rotacion maxima (grados)', entero, false, !fl.robustez),
-        slider('escala', 'Amplitud de escala', dos, false, !fl.robustez)
+        slider('jitter', 'Jitter (px)', entero,
+               'Cuanto se desplaza la imagen al azar antes de cada pasada. El articulo usa 16 px.', !fl.robustez),
+        slider('rotacion', 'Rotacion maxima (grados)', entero,
+               'Genera el rango de -r a r. El articulo usa 5, o sea once angulos enteros.', !fl.robustez),
+        slider('escala', 'Amplitud de escala', dos,
+               'Genera cinco escalas alrededor de 1. El articulo usa 0.05, o sea de 0.95 a 1.05.', !fl.robustez)
       ]),
       // La atenuacion solo existe en el espacio de Fourier: sin el, se apaga.
       seccion('pre', 'Preconditioning', fl.fourier ? 'Fourier decorrelado · atenuacion ' + dos(P.decay_power) : 'pixeles directos', [
         toggle('Espacio de Fourier decorrelado', 'fourier'),
-        slider('decay_power', 'Atenuacion de frecuencias', dos, true, !fl.fourier)
+        slider('decay_power', 'Atenuacion de frecuencias', dos,
+               'El exponente de 1/f: cuanto se frenan las frecuencias altas. Subirlo da imagenes mas suaves y bajarlo, mas detalle y mas ruido. El articulo usa 1.',
+               !fl.fourier)
       ])
     ];
     // W&B, en la barra superior.
@@ -997,6 +1034,7 @@ class App extends Component {
       panelOculto: abierto1 ? 'false' : 'true',
       panelEstilo: panelEstilo, panelNombre: bS.capa, panelMeta: panelMeta, panelInfo: panelInfo,
       hayEspecie: !!nombreFc, especieBinomio: nombreFc ? nombreFc[0] : '', especieAutor: nombreFc ? nombreFc[1] : '',
+      especieProb: probFc >= 0 ? pct(probFc) : '',
       rejillaEstilo: rejillaEstilo, celdas: celdas, leyendaMin: leyendaMin, leyendaMax: leyendaMax,
       hayLimpiar: obj === 'multi' && marcados.length > 0,
       hayTira: hayTira, tira: tira, tiraTexto: tiraTexto, tiraEstilo: tiraEstilo,
@@ -1009,6 +1047,9 @@ class App extends Component {
       selectorTab: nivel2 ? 0 : -1,
       pulsarMapa: pulsarMapa, moverMapa: moverMapa, salirMapa: salirMapa, teclaMapa: teclaMapa,
 
+      // Los dos interrogantes que no cuelgan de un mando y van fijos en la plantilla.
+      ayudaMuestra: 'Fotos del split de test, una por especie, entre las 144 especies con 300 o mas imagenes de entrenamiento. El nombre es el id de especie de Pl@ntNet, que hace de verdad conocida.',
+      ayudaObjetivo: 'Que se maximiza, de la seccion "Optimization Objectives" del articulo: un canal entero promediado, una sola neurona de ese canal, la capa completa (DeepDream) o varios canales a la vez.',
       secciones: secciones, especies: especies,
       modelos: Object.keys(st.info ? st.info.modelos : { resnet18: 1, resnet50: 1, resnet152: 1 }).map(function (a, k, todos) {
         var activo = a === st.modelo;

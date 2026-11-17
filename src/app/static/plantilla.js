@@ -68,7 +68,7 @@ export function plantilla(v) {
       </div>
       <div style="flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-bottom: 46px">
         <label for="muestra" style="display: flex; align-items: center; gap: 6px; font-size: 14px">O elige una del conjunto de test
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#767771" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Ayuda"><circle cx="12" cy="12" r="10"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg>
+          <span title=${v.ayudaMuestra} aria-label=${v.ayudaMuestra} role="img" tabindex="0" style="display: inline-flex; cursor: help"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#767771" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg></span>
         </label>
         <select id="muestra" value=${v.muestraSel} onChange=${v.elegirMuestra} style="font: inherit; font-size: 15px; height: 40px; padding: 0 12px; border: 1px solid #dddcd3; border-radius: 6px; background: #f1f1ec; color: #1b1c19">
           <option value="">(ninguna)</option>
@@ -86,7 +86,7 @@ export function plantilla(v) {
     
     <fieldset style="border: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px">
       <legend style="display: flex; align-items: center; gap: 6px; font-size: 14px; padding: 0; margin-bottom: 4px">Objetivo
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#767771" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Ayuda"><circle cx="12" cy="12" r="10"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg>
+        <span title=${v.ayudaObjetivo} aria-label=${v.ayudaObjetivo} role="img" tabindex="0" style="display: inline-flex; cursor: help"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#767771" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg></span>
       </legend>
       <div style="display: inline-flex; flex-wrap: wrap; width: fit-content">
         ${(v.objetivos || []).map((o) => html`
@@ -147,8 +147,14 @@ export function plantilla(v) {
               <span style="font-family: 'Source Code Pro', ui-monospace, monospace; font-size: 15px; font-weight: 600; color: #edefe9">${v.panelNombre}</span>
               ${(v.hayEspecie) ? html`
                 <span style="font-size: 15px; color: #edefe9"><em>${v.especieBinomio}</em> <span style="color: #c3c8bd">${v.especieAutor}</span></span>
+                ${(v.especieProb) ? html`
+                  <span style="font-family: 'Source Code Pro', ui-monospace, monospace; font-size: 15px; font-weight: 600; color: #3ebd9d">${v.especieProb}</span>
+                ` : null}
               ` : null}
-              <span style="font-size: 13px; color: #a3a99d">${v.panelMeta}</span>
+              <!-- Renglon propio siempre: con el nombre de la especie y su probabilidad
+                   delante, que miden lo que midan, esta linea caia unas veces al lado y
+                   otras debajo, y la cabecera bailaba al cambiar de clase. -->
+              <span style="flex: 0 0 100%; font-size: 13px; color: #a3a99d">${v.panelMeta}</span>
             </div>
             
             ${(v.hayTira) ? html`
@@ -277,7 +283,7 @@ export function plantilla(v) {
                     ${(m.esTexto) ? html`
                       <label for=${m.id} style="display: flex; align-items: center; gap: 6px; font-size: 14px">${m.etiqueta}
                         ${(m.ayuda) ? html`
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#767771" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Ayuda"><circle cx="12" cy="12" r="10"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg>
+                          <span title=${m.ayuda} aria-label=${m.ayuda} role="img" tabindex="0" style="display: inline-flex; cursor: help"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#767771" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg></span>
                         ` : null}
                       </label>
                       <input id=${m.id} type="text" inputmode="numeric" autocomplete="off" value=${m.valor} onInput=${m.cambiar} style="font: inherit; font-size: 15px; height: 40px; box-sizing: border-box; padding: 0 12px; border: 1px solid #dddcd3; border-radius: 6px; background: #fbfbf9; color: #1b1c19; font-variant-numeric: tabular-nums" />
@@ -286,7 +292,7 @@ export function plantilla(v) {
                       <div style="display: flex; align-items: center; gap: 6px; font-size: 14px">
                         <span>${m.etiqueta}</span>
                         ${(m.ayuda) ? html`
-                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#767771" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Ayuda"><circle cx="12" cy="12" r="10"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg>
+                          <span title=${m.ayuda} aria-label=${m.ayuda} role="img" tabindex="0" style="display: inline-flex; cursor: help"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#767771" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path></svg></span>
                         ` : null}
                       </div>
                       <div style="position: relative; height: 40px">
