@@ -303,7 +303,15 @@ def maximizar_activacion(cfg: dict, run: Any | None = None,
     # 'auto' (o sin la clave) usa la GPU si la hay; la interfaz puede forzar 'cpu' o 'cuda'.
     pedido = str(cfg["optimizacion"].get("dispositivo", "auto"))
     if pedido == "auto":
-        pedido = "cuda" if torch.cuda.is_available() else "cpu"
+        # Con un modelo ya cargado se respeta DONDE ESTA. Moverlo seria un
+        # efecto colateral sobre un objeto del llamador: .to() cambia el
+        # modulo en sitio, asi que quien paso un modelo en CPU se lo
+        # encontraria en la GPU al volver. Sin modelo, la GPU si la hay.
+        try:
+            pedido = str(next(modelo.parameters()).device) if modelo is not None \
+                else ("cuda" if torch.cuda.is_available() else "cpu")
+        except StopIteration:        # un modelo sin parametros no dice nada
+            pedido = "cuda" if torch.cuda.is_available() else "cpu"
     if pedido == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("se ha pedido la GPU pero torch no ve ninguna (torch.cuda.is_available() es False)")
     dispositivo = torch.device(pedido)
