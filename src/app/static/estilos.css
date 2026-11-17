@@ -1,0 +1,39 @@
+/* Estilos de la interfaz: los del <helmet> del diseno (v13), con las imagenes de
+   cada foto y cada modelo en variables CSS que la pagina cambia al vuelo. */
+body{margin:0;background:#fbfbf9}
+a{color:#0f6f5c}a:hover{color:#0a5a4a}
+@keyframes avance{from{background-position:0 0}to{background-position:20px 0}}
+@media (prefers-reduced-motion: reduce){.progreso-relleno{animation:none !important}}
+
+.cara{position:absolute;box-sizing:border-box;backface-visibility:hidden}
+.hoja{position:absolute;box-sizing:border-box;backface-visibility:hidden;background-repeat:no-repeat;image-rendering:pixelated}
+.hoja-foto{background-image:var(--foto);background-size:cover;image-rendering:auto}
+.hoja-rgb{background-image:var(--rgb);image-rendering:auto}
+.hoja-l1{background-image:var(--atlas-l1)}
+.hoja-l2{background-image:var(--atlas-l2)}
+.hoja-l3{background-image:var(--atlas-l3)}
+.hoja-l4{background-image:var(--atlas-l4)}
+.etapa{transition:transform .25s ease,opacity .5s ease}
+.etapa:hover{transform:translateY(-6px)}
+.etapa:focus-visible{outline:2px solid #3ebd9d;outline-offset:6px;border-radius:6px}
+.celda:hover{outline:1px solid #edefe9;outline-offset:0}
+.celda:focus-visible{outline:2px solid #3ebd9d;outline-offset:1px}
+.selector-pixel{cursor:crosshair}
+.selector-pixel:focus-visible{outline:2px solid #3ebd9d;outline-offset:3px}
+.volver:hover,.limpiar:hover{color:#edefe9}
+.modelo:not([aria-pressed="true"]):not(:disabled):hover{color:#edefe9;border-color:#5a6058}
+.modelo:focus-visible{outline:2px solid #3ebd9d;outline-offset:2px}
+.bloque:not([aria-pressed="true"]):hover{background:#5a6058 !important}
+.bloque:focus-visible{outline:2px solid #3ebd9d;outline-offset:1px}
+.hoja{transition:transform .5s ease}
+.desplegable:hover{background:#f6f6f2}
+.desplegable:focus-visible{outline:2px solid #0f6f5c;outline-offset:-2px}
+@media (prefers-reduced-motion: reduce){.camara,.velo,.panel-canales,.panel-mapa,.celda{transition:none !important}}
+
+/* Deslizadores: el diseno los dibuja (pista, relleno y pomo); encima va un
+   input range nativo transparente, que es el que se arrastra y el que lee el
+   teclado y el lector de pantalla. */
+.deslizador{position:absolute;left:0;right:0;top:12px;width:100%;height:24px;margin:0;opacity:0;cursor:pointer}
+.deslizador:focus-visible + .foco-deslizador{outline:2px solid #0f6f5c;outline-offset:2px}
+.zona-subida.arrastrando{outline:2px dashed #0f6f5c;outline-offset:-2px}
+button:disabled{cursor:not-allowed}
