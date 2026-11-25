@@ -970,6 +970,20 @@ class App extends Component {
     // Los pasos se reparten entre N capturas: con 1000 pasos y N = 4, a los 250, 500, 750 y 1000.
     // La captura que esta en camino ensena la vista previa del paso actual.
     var N_CAPTURAS = st.info ? st.info.capturas : 4;
+    // Un nombre de fichero que diga que es la imagen sin tener que abrirla:
+    // modelo, capa, lo que se optimizo y en que paso. Igual que nombre_salida()
+    // en feature_viz.py, los puntos de la capa pasan a guiones bajos.
+    function nombreDescarga(paso, final) {
+      var trozos = ['patron', st.modelo, bS.capa.replace(/\./g, '_')];
+      if (obj === 'capa') trozos.push('capa_entera');
+      else if (obj === 'multi') trozos.push('canales_' + (st.multi.canales.join('-') || 'ninguno'));
+      else if (obj === 'neurona') {
+        var pD = st.pos[sel] || { x: 0, y: 0 };
+        trozos.push('canal_' + st.elegidos[sel], 'pos_' + pD.x + '-' + pD.y);
+      } else trozos.push((bS.lado === 0 ? 'clase_' : 'canal_') + st.elegidos[sel]);
+      trozos.push(final ? 'final' : 'paso_' + paso);
+      return trozos.join('_').replace(/[^A-Za-z0-9_.-]/g, '') + '.png';
+    }
     var progreso = T ? T.paso / Math.max(1, T.pasos) : 0;
     var pasosCaptura = T && T.capturas_en.length ? T.capturas_en : [];
     var fotogramas = [];
@@ -986,6 +1000,11 @@ class App extends Component {
           hayImagen: hecho || enCurso,
           pendiente: !hecho && !enCurso,
           etiqueta: 'Paso ' + paso + (final ? ' · final' : ''),
+          // Solo se ofrece descargar lo ya terminado: la vista previa en
+          // curso cambia cada pocos pasos y bajarla no tiene sentido.
+          descarga: hecho ? src : '',
+          nombreArchivo: nombreDescarga(paso, final),
+          tituloDescarga: 'Descargar la imagen del paso ' + paso,
           marco: 'position:relative;aspect-ratio:1;border-radius:4px;overflow:hidden;background:#f1f1ec;' +
             (!hecho && !enCurso ? 'border:1px dashed #c9c8bf;box-sizing:border-box;' : '') +
             (final && hecho ? 'outline:2px solid #0f6f5c;outline-offset:2px;' : ''),

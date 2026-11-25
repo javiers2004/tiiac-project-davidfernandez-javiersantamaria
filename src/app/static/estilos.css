@@ -37,3 +37,16 @@ a{color:#0f6f5c}a:hover{color:#0a5a4a}
 .deslizador:focus-visible + .foco-deslizador{outline:2px solid #0f6f5c;outline-offset:2px}
 .zona-subida.arrastrando{outline:2px dashed #0f6f5c;outline-offset:-2px}
 button:disabled{cursor:not-allowed}
+
+/* Descarga de una imagen generada: aparece al pasar por encima de su marco.
+   Se queda visible al tabular hasta ella (focus-within) porque si no, con el
+   teclado no habria forma de llegar. Y en pantalla tactil no hay "encima",
+   asi que ahi se deja siempre a la vista. */
+.descargar{position:absolute;top:6px;right:6px;display:flex;align-items:center;justify-content:center;
+  width:28px;height:28px;border-radius:6px;background:rgba(20,21,19,.55);color:#edefe9;
+  opacity:0;transition:opacity .15s ease,background .15s ease}
+.marco-captura:hover .descargar,.marco-captura:focus-within .descargar{opacity:1}
+.descargar:hover{background:rgba(20,21,19,.8);color:#edefe9}
+.descargar:focus-visible{opacity:1;outline:2px solid #3ebd9d;outline-offset:2px}
+@media (hover: none){.descargar{opacity:1}}
+@media (prefers-reduced-motion: reduce){.descargar{transition:none}}
